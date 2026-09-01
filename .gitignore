@@ -24,6 +24,7 @@ ai-interview-ui/node_modules/
 ai-interview-ui/dist/
 ai-interview-ui/dist-ssr/
 *.local
+*.tsbuildinfo
 
 # Logs
 logs
