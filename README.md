@@ -13,7 +13,7 @@ An end-to-end **AI interview practice platform**. A candidate pastes a **job des
 1. [Highlights](#highlights)
 2. [Features](#features)
 3. [System architecture](#system-architecture)
-4. [Frontend flow](#frontend-flow)
+4. [Frontend & backend flows](#frontend-flow)
 5. [How an answer is processed](#how-an-answer-is-processed)
 6. [Adaptive question routing](#adaptive-question-routing)
 7. [Session lifecycle](#session-lifecycle)
@@ -105,32 +105,27 @@ flowchart TB
 ## Frontend flow
 
 ```mermaid
-sequenceDiagram
-    participant U as User
-    participant S as SetupScreen
-    participant C as CameraCheck
-    participant P as PreInterview
-    participant I as InterviewScreen
-    participant R as ReportScreen
-
-    U->>S: paste JD, upload resume, pick rubric
-    S->>S: /detect-seniority → auto-set difficulty
-    S->>API: POST /interview/start
-    API-->>S: session_id + question bank (first question)
-    S->>C: navigate
-    C->>C: live MediaPipe metrics feel-check
-    C->>P: ready
-    P->>I: begin (fullscreen)
-    loop until complete
-        I->>I: record answer (webcam + mic)
-        I->>API: POST /interview/answer (video, session_id, question_id)
-        API-->>I: next question OR follow-up OR "complete"
-        I->>localStorage: save session for resume
-    end
-    I->>API: POST /interview/end
-    API-->>I: full report JSON
-    I->>R: show report (charts, strengths, PDF export)
+flowchart LR
+    A[Setup<br/>JD + resume + rubric] --> B[Camera<br/>check]
+    B --> C[Pre-<br/>interview]
+    C --> D[Interview<br/>record & upload]
+    D --> E[Report<br/>charts + PDF]
 ```
+
+The interview screen loops: record answer → `POST /interview/answer` → backend returns the next question (or follow-up, or "complete").
+
+## Backend flow
+
+```mermaid
+flowchart LR
+    A["/start<br/>validate + generate questions"] --> B["/detect-seniority<br/>LLM difficulty + type"]
+    C["/answer<br/>video upload"] --> D["analyze<br/>audio + video signals"]
+    D --> E["score answer<br/>LLM + rubric"]
+    E --> F["route next<br/>adaptive question"]
+    G["/end<br/>build report"] --> H["FinalReport JSON"]
+```
+
+Parallel flow: `/detect-seniority` runs at setup; `/start` creates the session; each `/answer` runs analyze → score → route; `/end` produces the report.
 
 ---
 
