@@ -138,6 +138,9 @@ sequenceDiagram
 
 Every submitted video goes through a strict 4-step pipeline. Files are temporarily written to disk and cleaned up afterwards.
 
+<details>
+<summary>Expand pipeline diagram</summary>
+
 ```mermaid
 flowchart TD
     A["Candidate video<br/>(webm/mp4 upload)"] --> B["[0/4] _compress_video<br/>ffmpeg scale=640:480 crf=28"]
@@ -163,11 +166,16 @@ flowchart TD
     G --> O
 ```
 
+</details>
+
 ---
 
 ## Adaptive question routing
 
 The backend never picks the next question blindly — it combines **rubric coverage**, **remaining questions**, and the **quality of the last answer**.
+
+<details>
+<summary>Expand routing diagram</summary>
 
 ```mermaid
 flowchart TB
@@ -182,11 +190,16 @@ flowchart TB
     G --> I
 ```
 
+</details>
+
 - **Follow-up budget** = not yet at the question limit AND bank still has non-follow-up questions.
 
 ---
 
 ## Session lifecycle
+
+<details>
+<summary>Expand lifecycle diagram</summary>
 
 ```mermaid
 stateDiagram-v2
@@ -210,9 +223,14 @@ stateDiagram-v2
     end note
 ```
 
+</details>
+
 ---
 
 ## Scoring & report generation
+
+<details>
+<summary>Expand scoring diagram</summary>
 
 ```mermaid
 flowchart LR
@@ -232,6 +250,8 @@ flowchart LR
     K --> M
     L --> M
 ```
+
+</details>
 
 **Default rubric** (weights must sum to 100):
 
