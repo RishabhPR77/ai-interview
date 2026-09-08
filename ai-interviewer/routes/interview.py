@@ -58,6 +58,7 @@ async def start_interview(request: StartInterviewRequest):
         num_questions=max(1, request.num_questions - 1),
         interview_type=request.interview_type,
         difficulty=request.difficulty,
+        rubric=rubric_dict,
     )
 
     if not generated:

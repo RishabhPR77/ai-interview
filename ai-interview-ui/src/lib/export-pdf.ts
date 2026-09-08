@@ -260,12 +260,12 @@ export async function downloadReportPDF(report: ReportResponse, candidateName: s
 
   sectionTitle('Strengths')
   ;(report.strengths ?? []).forEach((s, i) => {
-    checkPage(14)
     doc.setFont('helvetica', 'normal')
     doc.setFontSize(8)
     const lh = lineHeight()
     const lines: string[] = doc.splitTextToSize(s, CW - 12)
     const boxH = Math.max(10, lines.length * lh + 3)
+    checkPage(boxH + 4)
     doc.setFillColor(18, 38, 26)
     doc.roundedRect(M, y, CW, boxH, 2, 2, 'F')
     doc.setDrawColor(...SUCCESS)
@@ -287,12 +287,12 @@ export async function downloadReportPDF(report: ReportResponse, candidateName: s
 
   sectionTitle('Weaknesses')
   ;(report.weaknesses ?? []).forEach((s, i) => {
-    checkPage(14)
     doc.setFont('helvetica', 'normal')
     doc.setFontSize(8)
     const lh = lineHeight()
     const lines: string[] = doc.splitTextToSize(s, CW - 12)
     const boxH = Math.max(10, lines.length * lh + 3)
+    checkPage(boxH + 4)
     doc.setFillColor(38, 18, 18)
     doc.roundedRect(M, y, CW, boxH, 2, 2, 'F')
     doc.setDrawColor(...DANGER)
@@ -312,11 +312,11 @@ export async function downloadReportPDF(report: ReportResponse, candidateName: s
     rule()
     sectionTitle('Red Flags')
     report.red_flags.forEach((s) => {
-      checkPage(12)
       doc.setFont('helvetica', 'normal')
       doc.setFontSize(8)
-      doc.setTextColor(...WARNING)
       const lines: string[] = doc.splitTextToSize(`⚠  ${s}`, CW - 4)
+      checkPage(lines.length * lineHeight() + 5)
+      doc.setTextColor(...WARNING)
       doc.text(lines, M + 2, y)
       y += lines.length * lineHeight() + 3
     })
@@ -342,38 +342,38 @@ export async function downloadReportPDF(report: ReportResponse, candidateName: s
     sectionTitle('Body Language Overview')
 
     if (glassesDetected) {
-      checkPage(10)
       doc.setFont('helvetica', 'normal')
       doc.setFontSize(8)
-      doc.setTextColor(...TEXT2)
       const lines: string[] = doc.splitTextToSize(
         'Glasses detected — eye contact was measured using head-pose orientation instead of iris tracking for some questions.',
         CW - 4
       )
+      checkPage(lines.length * lineHeight() + 4)
+      doc.setTextColor(...TEXT2)
       doc.text(lines, M + 2, y)
       y += lines.length * lineHeight() + 2
     }
 
     if (overallFatigue) {
-      checkPage(10)
       doc.setFont('helvetica', 'normal')
       doc.setFontSize(8)
-      doc.setTextColor(...WARNING)
       const fatigueMsg = totalYawns > 0
         ? `Fatigue detected — ${totalYawns} yawn(s) recorded across answers. Consider practicing when well-rested.`
         : 'Fatigue detected — signs of drowsiness were observed in body language during some answers.'
       const lines: string[] = doc.splitTextToSize(fatigueMsg, CW - 4)
+      checkPage(lines.length * lineHeight() + 4)
+      doc.setTextColor(...WARNING)
       doc.text(lines, M + 2, y)
       y += lines.length * lineHeight() + 2
     }
 
     if (avgGesture != null) {
-      checkPage(10)
       const gLabel = avgGesture > 0.4 ? 'very frequent hand gestures' : avgGesture > 0.15 ? 'moderate hand gestures' : 'minimal hand gestures'
       doc.setFont('helvetica', 'normal')
       doc.setFontSize(8)
-      doc.setTextColor(...TEXT2)
       const lines: string[] = doc.splitTextToSize(`Overall gesture activity: ${gLabel} throughout the interview.`, CW - 4)
+      checkPage(lines.length * lineHeight() + 4)
+      doc.setTextColor(...TEXT2)
       doc.text(lines, M + 2, y)
       y += lines.length * lineHeight() + 2
     }
@@ -389,16 +389,40 @@ export async function downloadReportPDF(report: ReportResponse, candidateName: s
   const transcriptQuestions = report.per_question_scores ?? []
 
   transcriptQuestions.forEach((q, i) => {
-    checkPage(40)
-
+    // ── Measure everything for this question BEFORE drawing anything, so the
+    // page-break decision is based on the real height needed — not a guess.
+    // This keeps a question and its answer box together on one page instead
+    // of letting the header land on one page and the answer on the next.
     const qHeaderH = 14
+    const catLabel = q.category ? ` · ${prettyLabel(q.category)}` : ''
+    const qText = q.question_text ?? q.question ?? ''
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(9)
+    const qLines: string[] = doc.splitTextToSize(qText, CW - 8)
+    const qH = doc.getFontSize() * doc.getLineHeightFactor() * (25.4 / 72)
+    const qBlockH = qHeaderH + qLines.length * qH
+
+    const answerText = q.answer_text ?? q.answer_transcript ?? ''
+    let aLines: string[] = []
+    let aH = 0
+    let aBoxH = 0
+    if (answerText) {
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(7.5)
+      aLines = doc.splitTextToSize(answerText, CW - 8)
+      aH = doc.getFontSize() * doc.getLineHeightFactor() * (25.4 / 72)
+      aBoxH = aLines.length * aH + 6
+    }
+
+    // Single combined check keeps the header + answer box on the same page.
+    checkPage(qBlockH + (answerText ? 2 + aBoxH + 3 : 0) + 6)
+
     doc.setFillColor(...SURFACE)
     doc.roundedRect(M, y, CW, qHeaderH, 3, 3, 'F')
 
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(7)
     doc.setTextColor(...PRIMARY)
-    const catLabel = q.category ? ` · ${prettyLabel(q.category)}` : ''
     doc.text(`Q${i + 1}${catLabel}`, M + 4, y + 5.5)
 
     if (q.anomaly_flagged) {
@@ -413,21 +437,11 @@ export async function downloadReportPDF(report: ReportResponse, candidateName: s
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(9)
     doc.setTextColor(...TEXT1)
-    const qText = q.question_text ?? q.question ?? ''
-    const qLines: string[] = doc.splitTextToSize(qText, CW - 8)
-    const qH = doc.getFontSize() * doc.getLineHeightFactor() * (25.4 / 72)
     doc.text(qLines, M + 4, y + 10.5)
-    y += qHeaderH + qLines.length * qH
+    y += qBlockH
 
-    const answerText = q.answer_text ?? q.answer_transcript ?? ''
     if (answerText) {
-      checkPage(16)
       gap(2)
-      doc.setFont('helvetica', 'normal')
-      doc.setFontSize(7.5)
-      const aLines: string[] = doc.splitTextToSize(answerText, CW - 8)
-      const aH = doc.getFontSize() * doc.getLineHeightFactor() * (25.4 / 72)
-      const aBoxH = aLines.length * aH + 6
       doc.setFillColor(18, 16, 28)
       doc.roundedRect(M, y, CW, aBoxH, 2, 2, 'F')
       doc.setFont('helvetica', 'normal')
@@ -462,11 +476,11 @@ export async function downloadReportPDF(report: ReportResponse, candidateName: s
     y += 14
 
     if (q.justification) {
-      checkPage(10)
       doc.setFont('helvetica', 'italic')
       doc.setFontSize(7.5)
-      doc.setTextColor(...TEXT3)
       const jLines: string[] = doc.splitTextToSize(q.justification, CW - 4)
+      checkPage(jLines.length * lineHeight() + 4)
+      doc.setTextColor(...TEXT3)
       doc.text(jLines, M + 2, y)
       y += jLines.length * lineHeight() + 2
     }
@@ -510,7 +524,11 @@ export async function downloadReportPDF(report: ReportResponse, candidateName: s
       }
 
       if (tags.length) {
-        checkPage(10)
+        doc.setFont('helvetica', 'normal')
+        doc.setFontSize(7)
+        const tagLine = tags.join('   ·   ')
+        const tagLines: string[] = doc.splitTextToSize(tagLine, CW - 4)
+        checkPage(3.5 + tagLines.length * 4 + 4)
         doc.setFont('helvetica', 'bold')
         doc.setFontSize(6)
         doc.setTextColor(...TEXT3)
@@ -519,8 +537,6 @@ export async function downloadReportPDF(report: ReportResponse, candidateName: s
         doc.setFont('helvetica', 'normal')
         doc.setFontSize(7)
         doc.setTextColor(...TEXT2)
-        const tagLine = tags.join('   ·   ')
-        const tagLines: string[] = doc.splitTextToSize(tagLine, CW - 4)
         doc.text(tagLines, M + 2, y)
         y += tagLines.length * 4 + 2
       }

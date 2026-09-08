@@ -27,16 +27,23 @@ QUESTION MIX RULES — strictly follow this split:
    - Cross-reference resume skills with the job requirements
    - Mark these with "question_source": "tailored"
 
-CATEGORY DISTRIBUTION — You MUST cover ALL these categories at least once:
+CATEGORY DISTRIBUTION — Generate EXACTLY these counts per category (this is MANDATORY, do not deviate):
+{category_counts}
+
+Category meanings:
 - technical_depth: system design, architecture, coding concepts
-- problem_solving: debugging, optimization, trade-off decisions  
+- problem_solving: debugging, optimization, trade-off decisions
 - communication_clarity: explaining complex topics simply, stakeholder management
 - confidence: handling pressure, disagreements, ownership of decisions
 - cultural_fit: teamwork, values, working style, growth mindset
 
-For "technical" type: weight heavily toward technical_depth and problem_solving
-For "behavioral" type: weight heavily toward communication_clarity, confidence, cultural_fit
-For "mixed" type: balance evenly across all 5 categories
+Every "category" in the questions JSON below MUST be one of the exact category names listed above.
+
+The counts are derived from the rubric weights (higher-weight categories get more questions).
+Tailor the question framing to the interview type:
+For "technical" type: frame questions around technical_depth and problem_solving content
+For "behavioral" type: frame questions around communication_clarity, confidence, cultural_fit content
+For "mixed" type: balance framing across all categories
 
 Difficulty guide:
 - junior: foundational concepts, simple scenarios
@@ -261,5 +268,39 @@ Return ONLY valid JSON:
   "recommendation": "hire | no_hire | maybe",
   "recommendation_confidence": "high | medium | low",
   "confidence_reasoning": "specific reasoning based on the interview performance"
+}}
+"""
+
+SINGLE_QUESTION_GENERATION_PROMPT = """
+You are a senior technical interviewer conducting a {difficulty}-level interview for a {job_title} role.
+
+Job Description:
+{job_description}
+
+Candidate Resume:
+{candidate_resume}
+
+Generate exactly ONE interview question that targets the rubric category: {category}
+
+Category focus: {category_hint}
+
+The question may be basic/foundational or tailored to the candidate's resume — choose whichever
+probes this category most effectively. A resume-tailored question is preferred when the resume
+provides good material.
+
+Return ONLY valid JSON, no extra text:
+{{
+  "question": {{
+    "text": "question text here",
+    "category": "{category}",
+    "skill_tested": "specific skill being tested",
+    "difficulty": "easy | medium | hard",
+    "question_source": "basic | tailored",
+    "expected_answer_duration_seconds": 90,
+    "follow_ups": [
+      "follow up question 1",
+      "follow up question 2"
+    ]
+  }}
 }}
 """

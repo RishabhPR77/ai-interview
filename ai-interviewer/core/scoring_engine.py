@@ -44,15 +44,34 @@ def compute_semantic_similarity(question_text: str, answer_text: str) -> float:
 # ── Weighted scoring ───────────────────────────────────────────────────────
 
 def compute_weighted_score(per_question_scores: list[dict], rubric: dict, total_questions: int) -> dict:
-    categories = list(rubric.keys())
+    # Only categories with a positive weight are scored/shown. A weight-0
+    # category is opted out by the user, so it should not produce a stray
+    # 0-score card in the report breakdown.
+    categories = [cat for cat, weight in rubric.items() if weight > 0]
+    if not categories:
+        categories = list(rubric.keys())
     category_totals = {cat: [] for cat in categories}
 
     for q_score in per_question_scores:
         # Skip intro question and skipped questions — no real answer to score
         if q_score.get("is_intro") or q_score.get("skipped"):
             continue
-        per_rubric = q_score.get("per_rubric_scores", {})
+        per_rubric = dict(q_score.get("per_rubric_scores", {}) or {})
         q_category = q_score.get("primary_category", "")
+
+        # Primary-category fallback: if the LLM omitted this question's own
+        # rubric category from per_rubric_scores (rare but it happens), derive
+        # a proxy from its core scores so a strong answer never silently
+        # collapses its own category to 0.
+        if q_category in categories and per_rubric.get(q_category) is None:
+            cores = [
+                q_score.get("content_score"),
+                q_score.get("communication_score"),
+                q_score.get("confidence_score"),
+            ]
+            cores = [s for s in cores if isinstance(s, (int, float))]
+            if cores:
+                per_rubric[q_category] = round(sum(cores) / len(cores), 1)
 
         for cat in categories:
             score_val = per_rubric.get(cat)
@@ -71,7 +90,7 @@ def compute_weighted_score(per_question_scores: list[dict], rubric: dict, total_
             for q_score in per_question_scores:
                 if q_score.get("is_intro") or q_score.get("skipped"):
                     continue
-                per_rubric = q_score.get("per_rubric_scores", {})
+                per_rubric = q_score.get("per_rubric_scores", {}) or {}
                 score_val = per_rubric.get(cat)
                 # Only include if it's NOT a neutral-5 placeholder (score != 5)
                 # OR if there are truly no other options
@@ -93,6 +112,8 @@ def compute_weighted_score(per_question_scores: list[dict], rubric: dict, total_
     # dishonest — we have zero evidence for the untested categories.
     overall = 0.0
     for cat, weight in rubric.items():
+        if weight <= 0:
+            continue
         overall += (category_avgs.get(cat, 0.0) / 10.0) * weight
 
     # Completion factor — penalize incomplete interviews much more aggressively.

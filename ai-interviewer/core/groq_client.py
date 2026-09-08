@@ -1,11 +1,13 @@
 import json
 import os
 import re
+from collections import Counter
 from dotenv import load_dotenv
 load_dotenv()
 from groq import Groq
 from prompts.templates import (
     QUESTION_GENERATION_PROMPT,
+    SINGLE_QUESTION_GENERATION_PROMPT,
     ADAPTIVE_FOLLOWUP_PROMPT,
     NEXT_QUESTION_SELECTION_PROMPT,
     PER_ANSWER_SCORING_PROMPT,
@@ -165,9 +167,132 @@ def _call_groq(prompt: str, max_tokens: int = DEFAULT_MAX_TOKENS_SMART, smart: b
     raise RuntimeError(f"Groq call failed after retries: {last_err}")
 
 
+_CATEGORY_HINTS = {
+    "technical_depth": "Probe hands-on technical skill: system design, architecture, debugging a specific tool or stack, or a deep-dive on a named project from the resume.",
+    "problem_solving": "Present a concrete problem that needs structured thinking: debugging a real scenario, optimizing a system, weighing trade-offs, or making an architecture decision.",
+    "communication_clarity": "Ask the candidate to explain a complex topic simply, or to describe how they communicate with stakeholders / non-technical audiences.",
+    "confidence": "Test assertiveness and ownership: handling disagreement, owning the outcome of a decision, or stepping up under pressure.",
+    "cultural_fit": "Probe teamwork, values, working style, conflict resolution with colleagues, adaptability, or growth mindset.",
+}
+
+DEFAULT_RUBRIC = {
+    "technical_depth": 35,
+    "problem_solving": 25,
+    "communication_clarity": 20,
+    "confidence": 10,
+    "cultural_fit": 10,
+}
+
+
+def _target_category_counts(rubric: dict, num_questions: int) -> dict:
+    """Distribute num_questions across weight>0 rubric categories.
+
+    Every category with a positive weight gets at least one question when the
+    budget allows; any leftover questions go to the highest-weight categories
+    first (largest-remainder style). Returns {category: count}.
+    """
+    required = [c for c, w in rubric.items() if w > 0] or list(rubric.keys())
+    if not required:
+        return {}
+    base, extra = divmod(max(1, num_questions), len(required))
+    counts = {c: base for c in required}
+    for c in sorted(required, key=lambda c: rubric.get(c, 0), reverse=True)[:extra]:
+        counts[c] += 1
+    return counts
+
+
+def _normalize_question_categories(questions: list, rubric: dict, counts: dict) -> None:
+    """Deterministically fix question categories so every weight>0 category
+    receives the questions it was promised (and no unknown category survives).
+
+    Invalid categories and excess duplicates are reassigned to the most
+    under-covered required category (missing categories get priority).
+    """
+    valid = set(rubric.keys())
+    current = Counter(q.get("category", "") for q in questions)
+
+    def deficit(c):
+        return counts.get(c, 0) - current[c]
+
+    reassignable = []
+    for q in questions:
+        cat = q.get("category")
+        if cat not in valid or (cat in valid and current[cat] > counts.get(cat, 0)):
+            reassignable.append(q)
+
+    for q in reassignable:
+        old = q.get("category")
+        if old in valid:
+            current[old] -= 1
+        target = max(valid, key=deficit)
+        if deficit(target) > 0:
+            q["category"] = target
+            current[target] += 1
+
+
+def _generate_single_question(job_title, job_description, candidate_resume, difficulty, category) -> dict:
+    """Generate exactly one targeted question for a missing rubric category."""
+    prompt = SINGLE_QUESTION_GENERATION_PROMPT.format(
+        job_title=job_title,
+        job_description=job_description,
+        candidate_resume=candidate_resume,
+        difficulty=difficulty,
+        category=category,
+        category_hint=_CATEGORY_HINTS.get(category, "Focus on this rubric category."),
+    )
+    result = _call_groq(
+        prompt,
+        max_tokens=QUESTION_GEN_MAX_TOKENS,
+        smart=True,
+        call_name=f"generate_single_question:{category}",
+    )
+    q = result.get("question")
+    if not isinstance(q, dict):
+        raise RuntimeError(f"Single-question response missing 'question' for {category}")
+    q.setdefault("category", category)
+    q.setdefault("skill_tested", category)
+    q.setdefault("difficulty", difficulty)
+    q.setdefault("question_source", "tailored")
+    q.setdefault("expected_answer_duration_seconds", 90)
+    q.setdefault("follow_ups", [])
+    return q
+
+
+def _backfill_missing_categories(job_title, job_description, candidate_resume, difficulty,
+                                 questions: list, rubric: dict, counts: dict) -> list:
+    """Generate targeted questions for any promised category that is still
+    missing after normalization. Never raises — a failed backfill just logs."""
+    current = Counter(q.get("category", "") for q in questions)
+    added = []
+    for cat in counts:
+        if counts[cat] <= 0 or current[cat] >= counts[cat]:
+            continue
+        try:
+            single = _generate_single_question(
+                job_title, job_description, candidate_resume, difficulty, cat
+            )
+            if single.get("category", cat) != cat:
+                single["category"] = cat
+            questions.append(single)
+            added.append(cat)
+        except Exception as e:
+            print(f"      [backfill] Failed to generate {cat} question: {e}")
+    return added
+
+
 def generate_questions(
-    job_title, job_description, candidate_resume, num_questions, interview_type, difficulty
+    job_title, job_description, candidate_resume, num_questions, interview_type, difficulty, rubric=None
 ):
+    if not rubric:
+        rubric = DEFAULT_RUBRIC
+    counts = _target_category_counts(rubric, num_questions)
+
+    count_lines = "\n".join(
+        f"- {cat}: {counts[cat]} question{'s' if counts[cat] != 1 else ''}"
+        for cat in sorted(counts, key=lambda c: counts[c], reverse=True)
+        if counts[cat] > 0
+    )
+
     prompt = QUESTION_GENERATION_PROMPT.format(
         job_title=job_title,
         job_description=job_description,
@@ -175,28 +300,17 @@ def generate_questions(
         num_questions=num_questions,
         interview_type=interview_type,
         difficulty=difficulty,
+        category_counts=count_lines,
     )
     result = _call_groq(prompt, max_tokens=QUESTION_GEN_MAX_TOKENS, smart=True, call_name="generate_questions")
     questions = result["questions"]
 
-    categories = ["technical_depth", "problem_solving", "communication_clarity", "confidence", "cultural_fit"]
-    used_categories = {q.get("category") for q in questions}
-    missing = [c for c in categories if c not in used_categories]
-
-    if missing:
-        from collections import Counter
-        cat_counts = Counter(q.get("category") for q in questions)
-        for q in questions:
-            if not missing:
-                break
-            if cat_counts[q.get("category")] > 1:
-                cat_counts[q["category"]] -= 1
-                q["category"] = missing.pop(0)
-
-    valid_categories = {"technical_depth", "problem_solving", "communication_clarity", "confidence", "cultural_fit"}
-    for q in questions:
-        if q.get("category") not in valid_categories:
-            q["category"] = "cultural_fit"
+    _normalize_question_categories(questions, rubric, counts)
+    added = _backfill_missing_categories(
+        job_title, job_description, candidate_resume, difficulty, questions, rubric, counts
+    )
+    if added:
+        print(f"      [backfill] Added targeted questions for: {', '.join(added)}")
 
     return questions
 
