@@ -147,12 +147,16 @@ export async function startInterview(req: StartRequest): Promise<StartResponse> 
 export async function submitAnswer(
   session_id: string,
   question_id: number,
-  video: Blob
+  video: Blob,
+  audioOnly: boolean = false
 ): Promise<AnswerResponse> {
   const fd = new FormData()
   fd.append('session_id', session_id)
   fd.append('question_id', String(question_id))
-  fd.append('video', video, 'answer.webm')
+  fd.append('video', video, audioOnly ? 'answer_audio_only.webm' : 'answer.webm')
+  if (audioOnly) {
+    fd.append('is_audio_only', 'true')
+  }
   const res = await fetch(`${API}/interview/answer`, { method: 'POST', body: fd })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))

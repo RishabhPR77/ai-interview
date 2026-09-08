@@ -112,6 +112,7 @@ async def submit_answer(
     session_id: str = Form(...),
     question_id: int = Form(...),
     video: UploadFile = File(...),
+    is_audio_only: bool = Form(False),
 ):
     session = session_store.get_session(session_id)
     if not session:
@@ -135,28 +136,50 @@ async def submit_answer(
     audio_path = tmp_path
 
     try:
-        print(f"\n[0/4] Compressing video...")
-        compressed_path = _compress_video(tmp_path)
+        if is_audio_only:
+            # Audio-only submission — skip video compression/analysis.
+            # Convert the raw audio (webm/ogg) to WAV so librosa can reliably
+            # decode it, then transcribe directly.
+            print(f"\n[0/2] Audio-only submission received — skipping video pipeline")
+            print(f"\n[1/2] Converting audio to WAV + transcribing with Groq Whisper...")
+            audio_path = _extract_audio(tmp_path)
+            audio_signals = audio_analyzer.compute_audio_signals(audio_path)
+            print(f"      Done. WPM: {audio_signals['words_per_minute']} | Fillers: {audio_signals['filler_word_count']}")
+            print(f"      Transcript: {audio_signals['transcript'][:100]}...")
 
-        print(f"\n[1/4] Extracting audio from video...")
-        audio_path = _extract_audio(compressed_path)
+            print(f"[2/2] Scoring answer with Groq...")
+            # Video analysis unavailable in audio-only mode — set defaults
+            video_signals = _empty_video_signals_audio_only()
+            scored_entry = scoring_engine.score_single_answer(
+                session=session,
+                question=question,
+                audio_signals=audio_signals,
+                video_signals=video_signals,
+            )
+            scored_entry["audio_only_submission"] = True
+        else:
+            print(f"\n[0/4] Compressing video...")
+            compressed_path = _compress_video(tmp_path)
 
-        print("[2/4] Transcribing with Groq Whisper...")
-        audio_signals = audio_analyzer.compute_audio_signals(audio_path)
-        print(f"      Done. WPM: {audio_signals['words_per_minute']} | Fillers: {audio_signals['filler_word_count']}")
-        print(f"      Transcript: {audio_signals['transcript'][:100]}...")
+            print(f"\n[1/4] Extracting audio from video...")
+            audio_path = _extract_audio(compressed_path)
 
-        print("[3/4] Analyzing video with MediaPipe...")
-        video_signals = video_analyzer.analyze_video(compressed_path, sample_interval_seconds=0.5)
-        print(f"      Done. Eye contact: {video_signals['eye_contact_percentage']}% | Posture: {video_signals['posture_score']}")
+            print("[2/4] Transcribing with Groq Whisper...")
+            audio_signals = audio_analyzer.compute_audio_signals(audio_path)
+            print(f"      Done. WPM: {audio_signals['words_per_minute']} | Fillers: {audio_signals['filler_word_count']}")
+            print(f"      Transcript: {audio_signals['transcript'][:100]}...")
 
-        print("[4/4] Scoring answer with Groq...")
-        scored_entry = scoring_engine.score_single_answer(
-            session=session,
-            question=question,
-            audio_signals=audio_signals,
-            video_signals=video_signals,
-        )
+            print("[3/4] Analyzing video with MediaPipe...")
+            video_signals = video_analyzer.analyze_video(compressed_path, sample_interval_seconds=0.5)
+            print(f"      Done. Eye contact: {video_signals['eye_contact_percentage']}% | Posture: {video_signals['posture_score']}")
+
+            print("[4/4] Scoring answer with Groq...")
+            scored_entry = scoring_engine.score_single_answer(
+                session=session,
+                question=question,
+                audio_signals=audio_signals,
+                video_signals=video_signals,
+            )
 
     finally:
         import time
@@ -409,3 +432,35 @@ def _compress_video(input_path: str) -> str:
     compressed_mb = os.path.getsize(compressed_path) / (1024 * 1024)
     print(f"      Compressed: {original_mb:.1f}MB → {compressed_mb:.1f}MB")
     return compressed_path
+
+
+def _empty_video_signals_audio_only() -> dict:
+    """Default video signals for audio-only submissions (no video analysis)."""
+    return {
+        "eye_contact_percentage":  0.0,
+        "avg_expression_score":    5.0,
+        "posture_score":           5.0,
+        "engagement_score":        5.0,
+        "posture_breakdown":       {},
+        "posture_slump_events":    [],
+        "dominant_position":       "unknown",
+        "position_breakdown":      {},
+        "drowsiness_score":        0.0,
+        "yawn_count":              0,
+        "yawn_events":             [],
+        "fatigue_trajectory":      "none",
+        "head_movement_pattern":   "unknown",
+        "contempt_detected":       False,
+        "disgust_detected":        False,
+        "smirk_detected":          False,
+        "genuine_smile_pct":       0.0,
+        "looking_down_pct":        0.0,
+        "micro_expression_events": [],
+        "attention_arc":           "unknown",
+        "nervousness_indicators":  ["audio_only_mode"],
+        "gesture_frequency":       0.0,
+        "expression_timeline":     [],
+        "look_away_events":        [],
+        "glasses_detected":        False,
+        "audio_only":              True,
+    }

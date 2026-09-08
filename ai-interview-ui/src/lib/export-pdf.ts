@@ -26,6 +26,17 @@ export async function downloadReportPDF(report: ReportResponse, candidateName: s
   const CW = PW - M * 2
   let y = 0
 
+  // Helper: get the actual line height in mm for the current font size.
+  // jsPDF's default lineHeightFactor is ~1.15, so the true line height for a
+  // single text line is fontSize * lineHeightFactor / (72/25.4) (converted
+  // from points to mm).  Using this everywhere guarantees boxes sized with
+  // doc.roundedRect fully contain the text with no clipping/overlap.
+  function lineHeight() {
+    const sizePt = doc.getFontSize()
+    const lhf = doc.getLineHeightFactor()
+    return sizePt * lhf * (25.4 / 72)  // points -> mm
+  }
+
   function fillBg() {
     doc.setFillColor(...BG)
     doc.rect(0, 0, PW, PH, 'F')
@@ -70,9 +81,10 @@ export async function downloadReportPDF(report: ReportResponse, candidateName: s
     doc.setFontSize(size)
     doc.setTextColor(...color)
     const lines: string[] = doc.splitTextToSize(text, CW)
-    checkPage(lines.length * 5 + 3)
+    const lh = lineHeight()
+    checkPage(lines.length * lh + 3)
     doc.text(lines, M, y)
-    y += lines.length * 5 + 2
+    y += lines.length * lh + 2
   }
 
   // ── Page 1 — Cover ──────────────────────────────────────────────────────
@@ -168,7 +180,8 @@ export async function downloadReportPDF(report: ReportResponse, candidateName: s
     const summaryLines: string[] = doc.splitTextToSize(report.summary, recoW - 2)
     const summaryStartY = y + 14
     doc.text(summaryLines, recoX, summaryStartY)
-    const summaryH = summaryLines.length * 4.5
+    const lh = doc.getFontSize() * doc.getLineHeightFactor() * (25.4 / 72)
+    const summaryH = summaryLines.length * lh
     const totalH = Math.max(circH + 4, summaryH + 18)
     y += totalH
   } else {
@@ -248,23 +261,23 @@ export async function downloadReportPDF(report: ReportResponse, candidateName: s
   sectionTitle('Strengths')
   ;(report.strengths ?? []).forEach((s, i) => {
     checkPage(14)
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(8)
+    const lh = lineHeight()
+    const lines: string[] = doc.splitTextToSize(s, CW - 12)
+    const boxH = Math.max(10, lines.length * lh + 3)
     doc.setFillColor(18, 38, 26)
-    doc.roundedRect(M, y, CW, 10, 2, 2, 'F')
+    doc.roundedRect(M, y, CW, boxH, 2, 2, 'F')
     doc.setDrawColor(...SUCCESS)
     doc.setLineWidth(0.5)
-    doc.line(M, y, M, y + 10)
+    doc.line(M, y, M, y + boxH)
     doc.setFont('helvetica', 'normal')
     doc.setFontSize(8)
     doc.setTextColor(...SUCCESS)
-    doc.text(`${i + 1}.`, M + 3, y + 6.5)
+    doc.text(`${i + 1}.`, M + 3, y + lh + 1.5)
     doc.setTextColor(...TEXT1)
-    const lines: string[] = doc.splitTextToSize(s, CW - 12)
-    if (lines.length > 1) {
-      doc.roundedRect(M, y, CW, lines.length * 5 + 4, 2, 2, 'F')
-      doc.line(M, y, M, y + lines.length * 5 + 4)
-    }
-    doc.text(lines, M + 10, y + 6.5)
-    y += Math.max(12, lines.length * 5 + 6)
+    doc.text(lines, M + 10, y + lh + 1.5)
+    y += boxH + 3
   })
 
   gap(4)
@@ -275,23 +288,23 @@ export async function downloadReportPDF(report: ReportResponse, candidateName: s
   sectionTitle('Weaknesses')
   ;(report.weaknesses ?? []).forEach((s, i) => {
     checkPage(14)
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(8)
+    const lh = lineHeight()
+    const lines: string[] = doc.splitTextToSize(s, CW - 12)
+    const boxH = Math.max(10, lines.length * lh + 3)
     doc.setFillColor(38, 18, 18)
-    doc.roundedRect(M, y, CW, 10, 2, 2, 'F')
+    doc.roundedRect(M, y, CW, boxH, 2, 2, 'F')
     doc.setDrawColor(...DANGER)
     doc.setLineWidth(0.5)
-    doc.line(M, y, M, y + 10)
+    doc.line(M, y, M, y + boxH)
     doc.setFont('helvetica', 'normal')
     doc.setFontSize(8)
     doc.setTextColor(...DANGER)
-    doc.text(`${i + 1}.`, M + 3, y + 6.5)
+    doc.text(`${i + 1}.`, M + 3, y + lh + 1.5)
     doc.setTextColor(...TEXT1)
-    const lines: string[] = doc.splitTextToSize(s, CW - 12)
-    if (lines.length > 1) {
-      doc.roundedRect(M, y, CW, lines.length * 5 + 4, 2, 2, 'F')
-      doc.line(M, y, M, y + lines.length * 5 + 4)
-    }
-    doc.text(lines, M + 10, y + 6.5)
-    y += Math.max(12, lines.length * 5 + 6)
+    doc.text(lines, M + 10, y + lh + 1.5)
+    y += boxH + 3
   })
 
   if (report.red_flags && report.red_flags.length > 0) {
@@ -305,7 +318,7 @@ export async function downloadReportPDF(report: ReportResponse, candidateName: s
       doc.setTextColor(...WARNING)
       const lines: string[] = doc.splitTextToSize(`⚠  ${s}`, CW - 4)
       doc.text(lines, M + 2, y)
-      y += lines.length * 5 + 3
+      y += lines.length * lineHeight() + 3
     })
   }
 
@@ -338,7 +351,7 @@ export async function downloadReportPDF(report: ReportResponse, candidateName: s
         CW - 4
       )
       doc.text(lines, M + 2, y)
-      y += lines.length * 5 + 2
+      y += lines.length * lineHeight() + 2
     }
 
     if (overallFatigue) {
@@ -351,7 +364,7 @@ export async function downloadReportPDF(report: ReportResponse, candidateName: s
         : 'Fatigue detected — signs of drowsiness were observed in body language during some answers.'
       const lines: string[] = doc.splitTextToSize(fatigueMsg, CW - 4)
       doc.text(lines, M + 2, y)
-      y += lines.length * 5 + 2
+      y += lines.length * lineHeight() + 2
     }
 
     if (avgGesture != null) {
@@ -362,7 +375,7 @@ export async function downloadReportPDF(report: ReportResponse, candidateName: s
       doc.setTextColor(...TEXT2)
       const lines: string[] = doc.splitTextToSize(`Overall gesture activity: ${gLabel} throughout the interview.`, CW - 4)
       doc.text(lines, M + 2, y)
-      y += lines.length * 5 + 2
+      y += lines.length * lineHeight() + 2
     }
 
     gap(2)
@@ -402,21 +415,25 @@ export async function downloadReportPDF(report: ReportResponse, candidateName: s
     doc.setTextColor(...TEXT1)
     const qText = q.question_text ?? q.question ?? ''
     const qLines: string[] = doc.splitTextToSize(qText, CW - 8)
+    const qH = doc.getFontSize() * doc.getLineHeightFactor() * (25.4 / 72)
     doc.text(qLines, M + 4, y + 10.5)
-    y += qHeaderH + qLines.length * 5
+    y += qHeaderH + qLines.length * qH
 
     const answerText = q.answer_text ?? q.answer_transcript ?? ''
     if (answerText) {
       checkPage(16)
       gap(2)
-      doc.setFillColor(18, 16, 28)
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(7.5)
       const aLines: string[] = doc.splitTextToSize(answerText, CW - 8)
-      const aBoxH = aLines.length * 4.5 + 7
+      const aH = doc.getFontSize() * doc.getLineHeightFactor() * (25.4 / 72)
+      const aBoxH = aLines.length * aH + 6
+      doc.setFillColor(18, 16, 28)
       doc.roundedRect(M, y, CW, aBoxH, 2, 2, 'F')
       doc.setFont('helvetica', 'normal')
       doc.setFontSize(7.5)
       doc.setTextColor(...TEXT2)
-      doc.text(aLines, M + 4, y + 5)
+      doc.text(aLines, M + 4, y + aH + 1)
       y += aBoxH + 3
     }
 
@@ -451,7 +468,7 @@ export async function downloadReportPDF(report: ReportResponse, candidateName: s
       doc.setTextColor(...TEXT3)
       const jLines: string[] = doc.splitTextToSize(q.justification, CW - 4)
       doc.text(jLines, M + 2, y)
-      y += jLines.length * 4.5 + 2
+      y += jLines.length * lineHeight() + 2
     }
 
     // ── Body language summary — mirrors the web report's per-question tags ──

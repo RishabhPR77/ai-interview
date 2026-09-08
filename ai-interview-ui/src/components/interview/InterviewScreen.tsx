@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-  import {
-    Circle, Loader2, CheckCircle2, Square, Video, RotateCcw, Send, LogOut,
-    AlertOctagon, Maximize2, Minimize2, SkipForward, MicOff, Briefcase, Volume2, VolumeX,
-  } from "lucide-react";
-  import { submitAnswer, endInterview, skipQuestion, type StartResponse, type ReportResponse } from "@/lib/interview-api";
+import {
+  Circle, Loader2, CheckCircle2, Square, Video, RotateCcw, Send, LogOut,
+  AlertOctagon, Maximize2, Minimize2, SkipForward, MicOff, Briefcase, Volume2, VolumeX,
+} from "lucide-react";
+import { submitAnswer, endInterview, skipQuestion, type StartResponse, type ReportResponse } from "@/lib/interview-api";
 
   const SESSION_KEY = 'tejaskrit_session'
 
@@ -93,6 +93,9 @@ import { useEffect, useRef, useState } from "react";
     const [mutedAlert, setMutedAlert] = useState(false);
     const [isSpeaking, setIsSpeaking] = useState(false);
     const [ttsEnabled, setTtsEnabled] = useState(true);
+    // Audio-only fallback state
+    const [cameraFailed, setCameraFailed] = useState(false);
+    const [audioOnlyMode, setAudioOnlyMode] = useState(false);
 
     // ── Think-time / auto-start state ─────────────────────────────────────
     const [thinkSecondsLeft, setThinkSecondsLeft] = useState<number | null>(null); // null = no think timer active
@@ -232,8 +235,29 @@ import { useEffect, useRef, useState } from "react";
             videoRef.current.srcObject = stream;
             await videoRef.current.play().catch(() => {});
           }
+          // Listen for video track ended events (camera disconnected)
+          stream.getVideoTracks().forEach(track => {
+            track.addEventListener('ended', () => {
+              console.log('[InterviewScreen] Video track ended - switching to audio-only mode');
+              setCameraFailed(true);
+              setAudioOnlyMode(true);
+            });
+          });
         } catch (e: any) {
-          setError(`Camera/mic access denied: ${e.message}`);
+          // Camera failed - try audio-only fallback
+          console.log('[InterviewScreen] Camera failed, attempting audio-only fallback:', e.message);
+          try {
+            const audioStream = await navigator.mediaDevices.getUserMedia({
+              video: false,
+              audio: true,
+            });
+            streamRef.current = audioStream;
+            setCameraFailed(true);
+            setAudioOnlyMode(true);
+            console.log('[InterviewScreen] Audio-only fallback successful');
+          } catch (audioErr: any) {
+            setError(`Microphone access denied: ${audioErr.message}`);
+          }
         }
       })();
       return () => {
@@ -358,15 +382,33 @@ import { useEffect, useRef, useState } from "react";
       cancelAutoStartTimers();
       chunksRef.current = [];
       const gen = ++recGenRef.current; // capture current generation
-      const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
-        ? "video/webm;codecs=vp9,opus"
-        : "video/webm";
+
+      // Check if we have a live video track (if camera failed, we're audio-only)
+      const hasVideo = streamRef.current.getVideoTracks().some(t => t.readyState === 'live');
+
+      let mime: string;
+      let blobType: string;
+      if (hasVideo) {
+        mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
+          ? "video/webm;codecs=vp9,opus"
+          : "video/webm";
+        blobType = "video/webm";
+      } else {
+        // Audio-only: use an audio codec
+        mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+          ? "audio/webm;codecs=opus"
+          : MediaRecorder.isTypeSupported("audio/webm")
+            ? "audio/webm"
+            : "audio/ogg;codecs=opus";
+        blobType = mime;
+      }
+
       const rec = new MediaRecorder(streamRef.current, { mimeType: mime });
       rec.ondataavailable = (e) => e.data.size > 0 && chunksRef.current.push(e.data);
       rec.onstop = () => {
         // Ignore if this recorder was replaced by a re-record
         if (gen !== recGenRef.current) return;
-        const blob = new Blob(chunksRef.current, { type: "video/webm" });
+        const blob = new Blob(chunksRef.current, { type: blobType });
         setPendingBlob(blob);
         setRecState('review');
       };
@@ -451,7 +493,7 @@ import { useEffect, useRef, useState } from "react";
       }, 1200);
 
       try {
-        const res = await submitAnswer(start.session_id, currentQ.question_id, pendingBlob);
+        const res = await submitAnswer(start.session_id, currentQ.question_id, pendingBlob, !!cameraFailed);
         if (stepTimerRef.current) { window.clearInterval(stepTimerRef.current); stepTimerRef.current = null; }
         setProcessingStep(STEPS.length);
         await new Promise(r => setTimeout(r, 400));
@@ -641,14 +683,35 @@ import { useEffect, useRef, useState } from "react";
 
             {/* Webcam */}
             <div className="relative bg-black rounded-2xl overflow-hidden aspect-video border border-border">
-              <video
-                ref={videoRef}
-                muted
-                playsInline
-                className="w-full h-full object-cover"
-                style={{ transform: "scaleX(-1)" }}
-              />
-              {recState === 'recording' && (
+              {!cameraFailed && (
+                <video
+                  ref={videoRef}
+                  muted
+                  playsInline
+                  className="w-full h-full object-cover"
+                  style={{ transform: "scaleX(-1)" }}
+                />
+              )}
+              {cameraFailed && (
+                <div className="w-full h-full flex flex-col items-center justify-center gap-3 bg-surface/50">
+                  <div className="w-16 h-16 rounded-full bg-warning/15 border border-warning/30 flex items-center justify-center">
+                    <MicOff className="w-8 h-8 text-warning" />
+                  </div>
+                  <div className="text-center px-6">
+                    <p className="text-white font-medium">Audio-only mode</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Camera unavailable. Your answers will be recorded as audio only — video analysis will be skipped.
+                    </p>
+                  </div>
+                  {recState === 'recording' && (
+                    <div className="flex items-center gap-2 mt-2">
+                      <Circle className="w-3 h-3 fill-destructive text-destructive animate-blink" />
+                      <span className="text-[11px] text-white/80">Recording audio… {mm}:{ss}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+              {recState === 'recording' && !cameraFailed && (
                 <div className={`absolute top-4 left-4 flex items-center gap-2 backdrop-blur px-3 py-1.5 rounded-full ${timeWarning ? 'bg-warning/80' : 'bg-black/70'}`}>
                   <Circle className="w-3 h-3 fill-destructive text-destructive animate-blink" />
                   <span className="text-xs font-medium text-white">REC {mm}:{ss}</span>
@@ -665,7 +728,7 @@ import { useEffect, useRef, useState } from "react";
                   <span className="text-xs font-medium text-white">Recording ready — review below</span>
                 </div>
               )}
-              {!streamRef.current && !error && (
+              {!streamRef.current && !error && !cameraFailed && (
                 <div className="absolute inset-0 flex items-center justify-center text-muted-foreground gap-2">
                   <Loader2 className="w-5 h-5 animate-spin" /> Connecting camera...
                 </div>
