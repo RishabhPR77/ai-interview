@@ -42,9 +42,10 @@ An end-to-end **AI interview practice platform**. A candidate pastes a **job des
 
 ## Features
 
-- **Role-tailored question generation** — LLM builds questions matching the job, the candidate's resume, difficulty and interview type.
+- **Role-tailored question generation** — LLM builds questions matching the job, the candidate's resume, difficulty and interview type, with per-category counts driven by the rubric weights (every weight>0 category is guaranteed coverage).
 - **Automatic seniority detection** — the setup screen calls `/detect-seniority` and pre-selects junior / mid / senior difficulty.
 - **Live video recording** in the browser via `MediaPipe`-based camera checks (gaze, posture, lighting).
+- **Audio-only fallback** — if the webcam fails or is denied, the interview continues in audio mode (mic-only recording, video analysis skipped) instead of blocking the session.
 - **Adaptive question selection** — the AI picks the next question based on rubric coverage gaps and how well the last answer went.
 - **Dynamic follow-ups** — weak or suspicious answers get an immediate, in-topic probing question.
 - **Real signal extraction**:
@@ -131,7 +132,7 @@ Parallel flow: `/detect-seniority` runs at setup; `/start` creates the session; 
 
 ## How an answer is processed
 
-Every submitted video goes through a strict 4-step pipeline. Files are temporarily written to disk and cleaned up afterwards.
+Every submitted video goes through a strict 4-step pipeline. Files are temporarily written to disk and cleaned up afterwards. If the candidate records audio-only (webcam unavailable), the video compression and MediaPipe steps are skipped — the raw audio is converted to WAV and analyzed directly.
 
 <details>
 <summary>Expand pipeline diagram</summary>
@@ -230,8 +231,8 @@ stateDiagram-v2
 ```mermaid
 flowchart LR
     A["conversation[]:<br/>per-question scores + signals"] --> B["compute_weighted_score"]
-    B --> C["category averages (0–10)<br/>only primary-category scores count<br/>(neutral-5 padding excluded)"]
-    C --> D["overall (0–100)<br/>Σ avg/10 × weight"]
+    B --> C["category averages (0–10)<br/>primary-category scores (neutral-5 padding excluded);<br/>missing primary category → proxy from core scores"]
+    C --> D["overall (0–100)<br/>Σ avg/10 × weight, weight-0 categories skipped"]
     D --> E["completion factor<br/>0.15 + 0.85 × answered/total<br/>→ aggressively penalizes incompleteness"]
     E --> F["breakdown + completion_ratio"]
 
@@ -258,7 +259,13 @@ flowchart LR
 | confidence | 10 |
 | cultural_fit | 10 |
 
-Scoring is intentionally conservative: **untested categories count as 0** (no rescaling), and a mid-interview skip or silent answer scores zero with a clear justification.
+Rubric weights drive the whole interview:
+
+- **Question coverage is guaranteed** — the question bank is built with exact per-category counts derived from the weights, so every category with weight > 0 gets at least one question (extra questions go to the highest-weight categories first). If the LLM misses a promised category, a targeted single-question **backfill** generates one.
+- **Weight-0 categories are opted out** — no question is generated for them and they never appear as stray 0-score cards in the report breakdown.
+- **Primary-category safety net** — if a scorer omits a question's own category, it is derived from the core content/communication/confidence scores, so a strong answer can't silently score its own category 0.
+
+Beyond that, scoring is intentionally conservative: **untested categories count as 0** (no rescaling), and a mid-interview skip or silent answer scores zero with a clear justification.
 
 ---
 
@@ -285,13 +292,13 @@ Scoring is intentionally conservative: **untested categories count as 0** (no re
 | Path | Purpose |
 |---|---|
 | `main.py` | FastAPI entrypoint. Loads `.env`, mounts CORS, includes router at `/api/v1`. `GET /` and `GET /health`. |
-| `routes/interview.py` | **All endpoints.** `/start`, `/detect-seniority`, `/answer`, `/skip`, `/end`; ffmpeg compress + audio extract; follow-up synthesis; next-question routing. |
-| `core/groq_client.py` | LLM layer. `_call_groq` (3 retries, JSON-only, code-fence stripping), question generation, per-answer scoring, follow-up generation, next-question selection, final summary, seniority detection. |
-| `core/scoring_engine.py` | Weighted rubric scoring, semantic similarity, behavioral heatmap, per-answer score assembly, final report assembly + LLM summary + hard safety net. |
+| `routes/interview.py` | **All endpoints.** `/start`, `/detect-seniority`, `/answer`, `/skip`, `/end`; ffmpeg compress + audio extract; audio-only fallback path (skips video pipeline); follow-up synthesis; next-question routing. |
+| `core/groq_client.py` | LLM layer. `_call_groq` (5 attempts; reasoning_effort=low; retries with doubled tokens on `finish_reason=length`; soft truncation validation), rubric-driven question generation with per-category counts + targeted single-question backfill, per-answer scoring, follow-up generation, next-question selection, final summary, seniority detection. |
+| `core/scoring_engine.py` | Weighted rubric scoring (weight-0 categories excluded, primary-category proxy fallback), semantic similarity, behavioral heatmap, per-answer score assembly, final report assembly + LLM summary + hard safety net. |
 | `core/session_store.py` | In-memory session store (meta, question bank, asked IDs, conversation, topic coverage). |
 | `analysis/audio_analyzer.py` | Whisper transcription (Groq → local fallback), tech-term autocorrection, WPM, pause counting, filler/hedging detection, confidence-language score, silent-recording flag. |
 | `analysis/video_analyzer.py` | MediaPipe frame-by-frame analysis: eye contact (matrix + iris, glasses-safe), expressions/blendshapes, posture (pose + face matrix), gestures, nervousness, drowsiness/fatigue, event detection, engagement score, expression timeline. |
-| `prompts/templates.py` | All LLM prompt templates (question gen, scoring, follow-up, routing, summary). |
+| `prompts/templates.py` | All LLM prompt templates (question gen, single-question backfill, scoring, follow-up, routing, summary). |
 | `models/schemas.py` | Pydantic models: `Rubric` (validates sum=100), `StartInterviewRequest/Response`, `AudioSignals`, `VideoSignals`, `QuestionScore`, `FinalReport`. |
 | `test_interview.py` | Manual/test helper for exercising the pipeline. |
 | `.env` | `GROQ_API_KEY`, `WHISPER_MODEL` (gitignored). |
@@ -371,7 +378,7 @@ All routes are under the `/api/v1` prefix (`http://127.0.0.1:8000/api/v1`).
 | GET | `/health` | — | `status`, `groq_key_set` |
 | POST | `/interview/start` | JSON: `job_title`, `job_description`, `candidate_name`, `candidate_resume`, `num_questions`, `interview_type`, `difficulty`, `rubric` | `StartInterviewResponse` (session_id + first question) |
 | POST | `/interview/detect-seniority` | JSON: `job_description`, `resume_text` | `{difficulty, interview_type, reasoning}` |
-| POST | `/interview/answer` | multipart: `session_id`, `question_id`, `video` (file) | next question, follow-up, or `{"status":"complete"}` + recent scores |
+| POST | `/interview/answer` | multipart: `session_id`, `question_id`, `video` (file), `is_audio_only` (`true`/`false`, optional — audio-only answers skip video analysis) | next question, follow-up, or `{"status":"complete"}` + recent scores |
 | POST | `/interview/{session_id}/skip` | JSON: `question_id` | next question or complete |
 | POST | `/interview/end` | form: `session_id` | `FinalReport` (score, recommendation, breakdown, heatmap) |
 
