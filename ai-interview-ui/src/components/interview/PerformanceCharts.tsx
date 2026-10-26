@@ -358,7 +358,8 @@ interface EyeContactProps {
 }
 
 export function EyeContactTimelineChart({ questions }: EyeContactProps) {
-  const data = questions.filter(q => q.video_signals?.look_away_events?.length != null);
+  // Skip answers with no usable video (camera off / analysis failed) — 0% would be misleading.
+  const data = questions.filter(q => q.video_signals?.look_away_events?.length != null && q.video_signals?.video_available !== false);
   if (!data.length) return null;
 
   return (
@@ -367,7 +368,7 @@ export function EyeContactTimelineChart({ questions }: EyeContactProps) {
       <p className="text-xs text-muted-foreground mb-4">Green band = 70–100% (ideal range)</p>
       <BarChart
         title=""
-        questions={questions}
+        questions={data}
         getValue={(q) => q.video_signals?.eye_contact_percentage ?? q.eye_contact_pct ?? 0}
         getColor={(v) => v >= 70 ? DARK.green : v >= 45 ? DARK.yellow : DARK.red}
         maxValue={100}

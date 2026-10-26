@@ -1,10 +1,8 @@
 import json
-import os
 import re
 from collections import Counter
-from dotenv import load_dotenv
-load_dotenv()
-from groq import Groq
+
+from core import llm
 from prompts.templates import (
     QUESTION_GENERATION_PROMPT,
     SINGLE_QUESTION_GENERATION_PROMPT,
@@ -14,12 +12,8 @@ from prompts.templates import (
     FINAL_SUMMARY_PROMPT,
 )
 
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-
-# Heavy model for scoring, question generation, and final summary
-MODEL_SMART = "openai/gpt-oss-120b"
-# Fast lightweight model for simple routing decisions (next question selection, follow-up generation)
-MODEL_FAST  = "openai/gpt-oss-20b"
+# Which model each call uses comes from the signed-in user's settings
+# (see core/llm.py): smart=True → evaluation model, otherwise the fast model.
 
 # ── Token budgets — reasoning models need more headroom than non-reasoning ──
 # These are the DEFAULT max_tokens for each call site.  The retry logic may
@@ -78,42 +72,29 @@ def _validate_result(result: dict, call_name: str = "") -> bool:
     return True
 
 
-def _call_groq(prompt: str, max_tokens: int = DEFAULT_MAX_TOKENS_SMART, smart: bool = False,
-               call_name: str = "", validate: bool = True) -> dict:
+def _call_llm(prompt: str, max_tokens: int = DEFAULT_MAX_TOKENS_SMART, smart: bool = False,
+              call_name: str = "", validate: bool = True) -> dict:
     """
-    Call Groq API with retry logic.
-    - Uses reasoning_effort="low" to minimize reasoning token consumption
-    - Checks finish_reason for "length" truncation
+    Call the user's chosen model with retry logic.
+    - smart=True uses the evaluation model, otherwise the fast routing model
+    - Checks for "length" truncation and doubles max_tokens on retry
     - Validates parsed JSON for truncated text fields
-    - Doubles max_tokens on truncation and retries
+    - Configuration problems (bad key, unknown model) fail immediately
     """
     import time
-    model = MODEL_SMART if smart else MODEL_FAST
+    config = llm.current_config()
+    target = config.eval if smart else config.fast
+    tag = f"[{target.provider}:{target.model}]"
     last_err = None
     current_max_tokens = max_tokens
     soft_retry_done = False  # heuristic validation gets ONE second chance, then accepted
 
     for attempt in range(5):  # Up to 5 attempts (base + 4 retries with doubled tokens)
         try:
-            response = client.chat.completions.create(
-                model=model,
-                max_tokens=current_max_tokens,
-                reasoning_effort="low",  # Minimize reasoning token consumption
-                include_reasoning=False,  # Don't include reasoning in output (saves tokens)
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert AI interviewer. Always respond with valid JSON only. No extra text, no markdown, no code fences.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.4,
-            )
+            raw, truncated = llm.chat(target, prompt, current_max_tokens)
 
-            # Check finish_reason for truncation
-            finish_reason = response.choices[0].finish_reason
-            if finish_reason == "length":
-                print(f"      [groq] WARNING: Response truncated (finish_reason=length) on attempt {attempt+1} "
+            if truncated:
+                print(f"      {tag} WARNING: Response truncated on attempt {attempt+1} "
                       f"with max_tokens={current_max_tokens}. Doubling tokens and retrying...")
                 last_err = RuntimeError(f"Response truncated at {current_max_tokens} tokens")
                 if attempt < 4:
@@ -121,15 +102,7 @@ def _call_groq(prompt: str, max_tokens: int = DEFAULT_MAX_TOKENS_SMART, smart: b
                     time.sleep(1)
                 continue
 
-            raw = response.choices[0].message.content.strip()
-
-            # Strip markdown code fences
-            if raw.startswith("```"):
-                raw = raw.split("```", 2)[1]
-                if raw.lower().startswith("json"):
-                    raw = raw[4:].lstrip()
-
-            result = json.loads(raw.strip())
+            result = llm.parse_json(raw)
 
             # Heuristic validation for truncated text. This fires when a valid
             # JSON value still contains a mid-word / mid-sentence cut (e.g. a
@@ -141,30 +114,34 @@ def _call_groq(prompt: str, max_tokens: int = DEFAULT_MAX_TOKENS_SMART, smart: b
             if validate and not _validate_result(result, call_name):
                 if not soft_retry_done:
                     soft_retry_done = True
-                    print(f"      [groq] WARNING: Possible truncated text detected in parsed JSON on attempt {attempt+1}. "
+                    print(f"      {tag} WARNING: Possible truncated text detected in parsed JSON on attempt {attempt+1}. "
                           f"Doubling tokens and retrying once...")
                     current_max_tokens = min(current_max_tokens * 2, 32000)
                     time.sleep(1)
                     continue
-                print(f"      [groq] NOTE: Possible truncated text persisted after second chance — accepting result.")
+                print(f"      {tag} NOTE: Possible truncated text persisted after second chance — accepting result.")
                 return result
 
             return result
 
         except json.JSONDecodeError as e:
             last_err = e
-            print(f"      [groq] JSON decode error on attempt {attempt+1}: {e}")
+            print(f"      {tag} JSON decode error on attempt {attempt+1}: {e}")
             # Retry on JSON errors — model sometimes outputs clean JSON on second attempt
             if attempt < 4:
                 time.sleep(2 ** min(attempt, 3))
             continue
-        except Exception as e:
+        except llm.AIError as e:
+            if not e.retryable:
+                raise
             last_err = e
-            print(f"      [groq] Error on attempt {attempt+1}: {e}")
+            print(f"      {tag} Error on attempt {attempt+1}: {e.message}")
             if attempt < 4:
                 time.sleep(2 ** min(attempt, 3))
 
-    raise RuntimeError(f"Groq call failed after retries: {last_err}")
+    if isinstance(last_err, llm.AIError):
+        raise last_err
+    raise llm.AIError(f"{target.label} ({target.model}) didn't return a usable answer after retries: {last_err}", 502)
 
 
 _CATEGORY_HINTS = {
@@ -240,7 +217,7 @@ def _generate_single_question(job_title, job_description, candidate_resume, diff
         category=category,
         category_hint=_CATEGORY_HINTS.get(category, "Focus on this rubric category."),
     )
-    result = _call_groq(
+    result = _call_llm(
         prompt,
         max_tokens=QUESTION_GEN_MAX_TOKENS,
         smart=True,
@@ -302,7 +279,7 @@ def generate_questions(
         difficulty=difficulty,
         category_counts=count_lines,
     )
-    result = _call_groq(prompt, max_tokens=QUESTION_GEN_MAX_TOKENS, smart=True, call_name="generate_questions")
+    result = _call_llm(prompt, max_tokens=QUESTION_GEN_MAX_TOKENS, smart=True, call_name="generate_questions")
     questions = result["questions"]
 
     _normalize_question_categories(questions, rubric, counts)
@@ -317,7 +294,7 @@ def generate_questions(
 
 def generate_adaptive_followup(question, answer, quality, gap):
     # Uses fast model — simple task
-    return _call_groq(ADAPTIVE_FOLLOWUP_PROMPT.format(
+    return _call_llm(ADAPTIVE_FOLLOWUP_PROMPT.format(
         question=question, answer=answer, quality=quality, gap=gap
     ), max_tokens=FOLLOWUP_MAX_TOKENS, smart=False, call_name="generate_adaptive_followup")
 
@@ -330,7 +307,7 @@ def select_next_question(job_title, difficulty, rubric, topic_coverage, remainin
         remaining_questions=json.dumps([{"id": q["id"], "category": q["category"], "skill_tested": q["skill_tested"]} for q in remaining_questions]),
         last_quality=last_quality, last_category=last_category,
     )
-    return _call_groq(prompt, max_tokens=DEFAULT_MAX_TOKENS_FAST, smart=False, call_name="select_next_question")
+    return _call_llm(prompt, max_tokens=DEFAULT_MAX_TOKENS_FAST, smart=False, call_name="select_next_question")
 
 
 def score_answer(job_title, difficulty, question, answer, audio_signals, video_signals, semantic_similarity: float = -1.0):
@@ -349,6 +326,15 @@ def score_answer(job_title, difficulty, question, answer, audio_signals, video_s
             relevance_hint = f"{semantic_similarity:.2f}/1.0 — answer is relevant to the question"
     else:
         relevance_hint = "not computed"
+
+    if video_signals.get("video_available", True):
+        video_note = ""
+    else:
+        reason = video_signals.get("unavailable_reason") or "video analysis unavailable"
+        video_note = (
+            f" UNAVAILABLE for this answer ({reason}). The numbers below are placeholders, "
+            "not measurements — ignore them completely and do not reward or penalise any video behaviour."
+        )
 
     prompt = PER_ANSWER_SCORING_PROMPT.format(
         job_title=job_title, difficulty=difficulty,
@@ -380,8 +366,9 @@ def score_answer(job_title, difficulty, question, answer, audio_signals, video_s
         look_away_count=len(video_signals.get("look_away_events", [])),
         glasses_detected=video_signals.get("glasses_detected", False),
         semantic_similarity=relevance_hint,
+        video_note=video_note,
     )
-    return _call_groq(prompt, max_tokens=SCORE_MAX_TOKENS, smart=True, call_name="score_answer")
+    return _call_llm(prompt, max_tokens=SCORE_MAX_TOKENS, smart=True, call_name="score_answer")
 
 
 def generate_final_summary(job_title, difficulty, candidate_name, full_transcript, rubric, weighted_scores, overall_score,
@@ -393,7 +380,7 @@ def generate_final_summary(job_title, difficulty, candidate_name, full_transcrip
         questions_answered=questions_answered, total_questions=total_questions,
         completion_pct=round(completion_pct, 1),
     )
-    return _call_groq(prompt, max_tokens=SUMMARY_MAX_TOKENS, smart=True, call_name="generate_final_summary")
+    return _call_llm(prompt, max_tokens=SUMMARY_MAX_TOKENS, smart=True, call_name="generate_final_summary")
 
 
 def detect_experience_level(job_description: str, resume_text: str) -> dict:
@@ -411,7 +398,7 @@ Resume:
 
 JSON only, no other text:"""
     try:
-        result = _call_groq(prompt, max_tokens=500, call_name="detect_experience_level", validate=False)
+        result = _call_llm(prompt, max_tokens=500, call_name="detect_experience_level", validate=False)
         if result.get("difficulty") not in ("junior", "mid", "senior"):
             result["difficulty"] = "mid"
         if result.get("interview_type") not in ("technical", "behavioral", "mixed"):

@@ -132,7 +132,7 @@ Audio behavior signals:
 - Confidence language score: {confidence_lang}/10
 - Hedging count: {hedging_count}
 
-Video behavior signals:
+Video behavior signals:{video_note}
 - Eye contact: {eye_contact}% of the time
 - Eye contact arc: {attention_arc} (consistent/improving/degrading across the answer)
 - Expression score: {expression_score}/10

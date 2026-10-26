@@ -457,7 +457,7 @@ export async function downloadReportPDF(report: ReportResponse, candidateName: s
       { label: 'Comms',      value: q.communication_score != null ? String(Math.round(q.communication_score)) : '—', color: scoreColorRgb(q.communication_score, 10) },
       { label: 'Confidence', value: q.confidence_score != null ? String(Math.round(q.confidence_score)) : '—', color: scoreColorRgb(q.confidence_score, 10) },
       { label: 'WPM',        value: String(Math.round(q.audio_signals?.words_per_minute ?? q.wpm ?? 0) || '—'), color: TEXT2 },
-      { label: 'Eye Contact', value: `${Math.round(q.video_signals?.eye_contact_percentage ?? q.eye_contact_pct ?? 0)}%`, color: TEXT2 },
+      { label: 'Eye Contact', value: q.video_signals?.video_available === false ? 'n/a' : `${Math.round(q.video_signals?.eye_contact_percentage ?? q.eye_contact_pct ?? 0)}%`, color: TEXT2 },
     ]
     const mw = CW / metrics.length
     metrics.forEach((m, mi) => {

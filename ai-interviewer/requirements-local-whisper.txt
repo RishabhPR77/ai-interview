@@ -1,0 +1,4 @@
+# Optional: offline Whisper fallback (set LOCAL_WHISPER_FALLBACK=true).
+# Pulls in PyTorch (~2 GB) — not recommended for small cloud instances.
+-r requirements.txt
+openai-whisper

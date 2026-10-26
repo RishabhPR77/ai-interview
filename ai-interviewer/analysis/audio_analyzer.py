@@ -27,69 +27,59 @@ CONFIDENT_PHRASES = [
     "specifically", "for example", "in that case", "the outcome"
 ]
 
+# Common speech-to-text mishearings of technical terms. Matched as whole words
+# / phrases only (case-insensitive), so ordinary speech is never rewritten —
+# e.g. "for a great team" must not become "foRAGreat team".
 TECH_CORRECTIONS = {
     "trok api": "Groq API",
     "trock api": "Groq API",
     "groc api": "Groq API",
-    "lama": "LLaMA",
-    "llama 3.3": "LLaMA-3.3-70B",
-    "lama 3.3": "LLaMA-3.3-70B",
-    "sponsor device": "SponsorWise",
-    "sponsor wise": "SponsorWise",
-    "sponsorwise": "SponsorWise",
-    "code archeologist": "Code Archaeologist",
-    "code archaeologist": "Code Archaeologist",
     "pine cone": "Pinecone",
     "pinecon": "Pinecone",
-    "xgb": "XGBoost",
     "x g boost": "XGBoost",
-    "x g b": "XGBoost",
-    "refrector": "refactor",
-    "refrect": "refactor",
-    "mediapipe": "MediaPipe",
     "media pipe": "MediaPipe",
     "fast api": "FastAPI",
     "fast a p i": "FastAPI",
-    "ai interwave": "AI interview",
-    "interwave": "interview",
-    "bge": "BGE",
-    "b g e": "BGE",
-    "r a g": "RAG",
     "socket dot io": "Socket.IO",
+    "next js": "Next.js",
+    "node js": "Node.js",
+    "post gres": "Postgres",
+    "postgre sql": "PostgreSQL",
+    "kubernetis": "Kubernetes",
+    "cooper netties": "Kubernetes",
     "j w t": "JWT",
     "r b a c": "RBAC",
 }
 
+_CORRECTION_PATTERNS = [
+    (re.compile(r"(?<![\w-])" + re.escape(wrong) + r"(?![\w-])", re.IGNORECASE), right)
+    for wrong, right in TECH_CORRECTIONS.items()
+]
+
 
 def correct_tech_terms(text: str) -> str:
-    result = text
-    lower = text.lower()
-    for wrong, correct in TECH_CORRECTIONS.items():
-        if wrong in lower:
-            result = re.sub(re.escape(wrong), correct, result, flags=re.IGNORECASE)
-            lower = result.lower()
-    return result
+    for pattern, right in _CORRECTION_PATTERNS:
+        text = pattern.sub(right, text)
+    return text
 
 
 def transcribe_audio(audio_path: str) -> dict:
     """
-    Transcribe audio using Groq Whisper API (whisper-large-v3-turbo).
-    Much faster than local Whisper and handles technical vocabulary better.
-    Falls back to local Whisper base if Groq API fails.
+    Transcribe audio with the user's chosen speech-to-text model
+    (Groq / OpenAI Whisper-family, or a multimodal Gemini / OpenRouter model).
+    Key/model problems are raised so the user sees them; transient failures
+    fall back to local Whisper only when LOCAL_WHISPER_FALLBACK=true.
     """
+    from core import llm
+    from core.config import LOCAL_WHISPER_FALLBACK
+
+    target = llm.current_config().stt
     try:
-        from groq import Groq
-        client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-        with open(audio_path, "rb") as f:
-            transcription = client.audio.transcriptions.create(
-                model="whisper-large-v3-turbo",
-                file=f,
-                response_format="verbose_json",
-                language="en",
-            )
-        return {"text": transcription.text}
-    except Exception as e:
-        print(f"      [audio] Groq Whisper failed ({e}), falling back to local Whisper...")
+        return {"text": llm.transcribe(target, audio_path)}
+    except llm.AIError as e:
+        if not (e.retryable and LOCAL_WHISPER_FALLBACK):
+            raise
+        print(f"      [audio] {target.label} transcription failed ({e.message}), falling back to local Whisper...")
         return _transcribe_local(audio_path)
 
 
@@ -97,7 +87,7 @@ _whisper_model = None
 
 
 def _transcribe_local(audio_path: str) -> dict:
-    """Fallback: local Whisper base model."""
+    """Optional fallback: local Whisper (pip install openai-whisper)."""
     import whisper
     global _whisper_model
     if _whisper_model is None:
@@ -148,7 +138,8 @@ def compute_audio_signals(audio_path: str) -> dict:
         )
 
         confident_hits = sum(
-            transcript_lower.count(phrase) for phrase in CONFIDENT_PHRASES
+            len(re.findall(r'\b' + re.escape(phrase) + r'\b', transcript_lower))
+            for phrase in CONFIDENT_PHRASES
         )
 
         base = 6.0
@@ -173,7 +164,14 @@ def compute_audio_signals(audio_path: str) -> dict:
         }
 
     except Exception as e:
-        return _empty_audio_signals(error=str(e))
+        from core.llm import AIError
+        from analysis.errors import AnalysisError
+        if isinstance(e, (AIError, AnalysisError)):
+            raise
+        # A decoding/analysis failure is not the same as the candidate saying
+        # nothing — never score it as a silent answer.
+        print(f"      [audio] analysis failed: {e}")
+        raise AnalysisError("We couldn't read the audio in your recording. Please submit it again.") from e
 
 
 def _count_pauses(y: np.ndarray, sr: int, min_pause_seconds: float = 1.0) -> int:
@@ -209,18 +207,3 @@ def _count_pauses(y: np.ndarray, sr: int, min_pause_seconds: float = 1.0) -> int
         return pause_count
     except Exception:
         return 0
-
-
-def _empty_audio_signals(error: str = "") -> dict:
-    return {
-        "transcript": f"[transcription unavailable: {error}]",
-        "words_per_minute": 0.0,
-        "pause_count": 0,
-        "filler_word_count": 0,
-        "filler_words_found": [],
-        "answer_duration_seconds": 0.0,
-        "confidence_language_score": 0.0,
-        "hedging_count": 0,
-        "word_count": 0,
-        "is_silent": True,
-    }
