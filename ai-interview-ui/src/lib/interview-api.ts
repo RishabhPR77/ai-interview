@@ -1,4 +1,4 @@
-const API = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://127.0.0.1:8000/api/v1'
+import { api, ApiError } from './api'
 
 export interface StartRequest {
   job_title: string
@@ -30,6 +30,7 @@ export interface StartResponse {
 export interface AnswerResponse {
   status: 'ongoing' | 'complete'
   question_id: number
+  question_number?: number
   question: string
   category: string
   is_follow_up: boolean
@@ -85,6 +86,9 @@ export interface QuestionScore {
     posture_slump_events?: Array<{ start: number; end: number; duration: number; avg_score: number }>
     micro_expression_events?: Array<{ timestamp: number; type: string; confidence: number }>
     avg_expression_score?: number
+    // false when the camera was off or analysis failed: the numbers are placeholders
+    video_available?: boolean
+    unavailable_reason?: string | null
     contempt_detected?: boolean
     disgust_detected?: boolean
     smirk_detected?: boolean
@@ -121,29 +125,44 @@ export interface SeniorityResult {
   reasoning: string
 }
 
-export async function detectSeniority(jobDescription: string, resumeText: string): Promise<SeniorityResult> {
-  const res = await fetch(`${API}/interview/detect-seniority`, {
+export function detectSeniority(jobDescription: string, resumeText: string): Promise<SeniorityResult> {
+  return api('/interview/detect-seniority', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ job_description: jobDescription, resume_text: resumeText }),
+    json: { job_description: jobDescription, resume_text: resumeText },
   })
-  if (!res.ok) throw new Error('Detection failed')
-  return res.json()
 }
 
-export async function startInterview(req: StartRequest): Promise<StartResponse> {
-  const res = await fetch(`${API}/interview/start`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(req),
-  })
-  if (!res.ok) {
-    const e = await res.json().catch(() => ({}))
-    throw new Error((e as any).detail || `HTTP ${res.status}`)
+export function startInterview(req: StartRequest): Promise<StartResponse> {
+  return api('/interview/start', { method: 'POST', json: req })
+}
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+/** Poll until the background analysis of this answer finishes. */
+async function waitForAnswer(session_id: string, question_id: number): Promise<AnswerResponse> {
+  const deadline = Date.now() + 15 * 60 * 1000
+  let networkFailures = 0
+  while (Date.now() < deadline) {
+    await sleep(1500)
+    let res: AnswerResponse | { status: 'processing' } | { status: 'error'; detail?: string }
+    try {
+      res = await api(`/interview/${session_id}/answer-status?question_id=${question_id}`)
+      networkFailures = 0
+    } catch (e) {
+      // Ride out brief connection drops; the analysis keeps running server-side.
+      if (e instanceof ApiError && e.status === 0 && ++networkFailures < 20) continue
+      throw e
+    }
+    if (res.status === 'processing') continue
+    if (res.status === 'error') {
+      throw new ApiError((res as { detail?: string }).detail ?? 'Analysis failed. Please submit again.', 422, 'answer_failed')
+    }
+    return res as AnswerResponse
   }
-  return res.json()
+  throw new ApiError('Analysing your answer is taking unusually long. Please try submitting again.', 504, 'answer_timeout')
 }
 
+/** Upload an answer, then wait for the server to analyse and score it. */
 export async function submitAnswer(
   session_id: string,
   question_id: number,
@@ -157,42 +176,36 @@ export async function submitAnswer(
   if (audioOnly) {
     fd.append('is_audio_only', 'true')
   }
-  const res = await fetch(`${API}/interview/answer`, { method: 'POST', body: fd })
-  if (!res.ok) {
-    const e = await res.json().catch(() => ({}))
-    throw new Error((e as any).detail || `HTTP ${res.status}`)
+  try {
+    await api<{ status: 'processing' }>('/interview/answer', { method: 'POST', body: fd })
+  } catch (e) {
+    // Already being analysed (e.g. a retry after a dropped connection) — just wait for it.
+    if (!(e instanceof ApiError && e.code === 'answer_processing')) throw e
   }
-  return res.json()
+  return waitForAnswer(session_id, question_id)
 }
 
-export async function skipQuestion(session_id: string, question_id: number): Promise<AnswerResponse> {
-  const res = await fetch(`${API}/interview/${session_id}/skip`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question_id }),
-  })
-  if (!res.ok) {
-    const e = await res.json().catch(() => ({}))
-    throw new Error((e as any).detail || `HTTP ${res.status}`)
-  }
-  return res.json()
+/** Where the interview is now — used to resync after a stale or lost request. */
+export function getInterviewState(session_id: string): Promise<AnswerResponse & { answer_processing?: boolean }> {
+  return api(`/interview/${session_id}/state`)
+}
+
+export function skipQuestion(session_id: string, question_id: number): Promise<AnswerResponse> {
+  return api(`/interview/${session_id}/skip`, { method: 'POST', json: { question_id } })
 }
 
 export async function endInterview(session_id: string): Promise<ReportResponse> {
   const fd = new FormData()
   fd.append('session_id', session_id)
-  const res = await fetch(`${API}/interview/end`, { method: 'POST', body: fd })
-  if (!res.ok) {
-    const e = await res.json().catch(() => ({}))
-    throw new Error((e as any).detail || `HTTP ${res.status}`)
-  }
-  const report: ReportResponse = await res.json()
+  const report = await api<ReportResponse>('/interview/end', { method: 'POST', body: fd })
   report.per_question_scores = (report.per_question_scores || []).map(q => ({
     ...q,
     question: q.question_text || q.question,
     answer_transcript: q.answer_text || q.answer_transcript,
     wpm: q.audio_signals?.words_per_minute ?? q.wpm,
-    eye_contact_pct: q.video_signals?.eye_contact_percentage ?? q.eye_contact_pct,
+    eye_contact_pct: q.video_signals?.video_available === false
+      ? undefined
+      : q.video_signals?.eye_contact_percentage ?? q.eye_contact_pct,
   }))
   return report
 }

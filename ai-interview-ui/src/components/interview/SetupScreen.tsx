@@ -1,11 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Upload, FileText, Loader2, Sparkles, ArrowRight, Check,
-  Mic, Eye, Brain, Activity, Shield, ChevronRight, Briefcase,
-  ClipboardList, Play, TrendingUp, Video, BarChart3
+  Mic, Eye, Brain, Activity, Shield, ChevronRight, AlertTriangle,
+  ClipboardList, Play, TrendingUp, Video, BarChart3, AudioLines
 } from "lucide-react";
 import { parseFileToText, startInterview, detectSeniority, type StartResponse, type SeniorityResult } from "@/lib/interview-api";
 import { preloadMediaPipe } from "@/lib/mediapipe-loader";
+import { AppHeader } from "@/components/AppHeader";
+import { ApiError } from "@/lib/api";
+import { getAiSettings, type AiSettings } from "@/lib/account-api";
+import { useAuth } from "@/lib/auth";
+import { Link } from "@/lib/router";
 
 interface Props {
   onStarted: (data: StartResponse, ctx: { candidateName: string; jobTitle: string }) => void;
@@ -54,8 +59,49 @@ const ASSESS_PILLARS = [
   { icon: Activity, label: "Confidence",         sub: "Tone, hedging, and language score" },
 ];
 
+function AiStatus({ settings }: { settings: AiSettings | null }) {
+  if (!settings) return null;
+  const label = (id: string | null) => settings.providers.find(p => p.id === id)?.label ?? id;
+  const sel = settings.selection;
+  if (!settings.ready) {
+    return (
+      <div className="rounded-xl border border-warning/30 bg-warning/[0.07] px-4 py-3.5 flex items-start gap-3">
+        <AlertTriangle className="w-4 h-4 text-warning mt-0.5 shrink-0" />
+        <div className="flex-1 text-sm">
+          <div className="font-medium">Connect an AI provider first</div>
+          <div className="text-muted-foreground text-xs mt-0.5">
+            Interviews run on your own API key. Add one and choose evaluation + transcription models.
+          </div>
+        </div>
+        <Link href="/settings?onboarding=1" className="shrink-0 text-xs font-medium px-3 py-1.5 rounded-lg bg-warning text-warning-foreground hover:opacity-90 transition">
+          Set up
+        </Link>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-xl border border-border bg-input/30 px-4 py-3 flex items-center gap-3 text-xs">
+      <div className="flex-1 min-w-0 space-y-1">
+        <div className="flex items-center gap-1.5 truncate">
+          <Brain className="w-3.5 h-3.5 text-primary shrink-0" />
+          <span className="text-muted-foreground">Evaluation</span>
+          <span className="font-mono truncate">{label(sel.eval_provider)} · {sel.eval_model}</span>
+        </div>
+        <div className="flex items-center gap-1.5 truncate">
+          <AudioLines className="w-3.5 h-3.5 text-primary shrink-0" />
+          <span className="text-muted-foreground">Transcription</span>
+          <span className="font-mono truncate">{label(sel.stt_provider)} · {sel.stt_model}</span>
+        </div>
+      </div>
+      <Link href="/settings#models" className="shrink-0 text-primary hover:underline">Change</Link>
+    </div>
+  );
+}
+
 export function SetupScreen({ onStarted }: Props) {
-  const [name, setName] = useState("");
+  const { user } = useAuth();
+  const [name, setName] = useState(user?.name ?? "");
+  const [ai, setAi] = useState<AiSettings | null>(null);
   const [jd, setJd] = useState("");
   const [resumeFile, setResumeFile] = useState<File | null>(null);
   const [resumeText, setResumeText] = useState("");
@@ -68,7 +114,7 @@ export function SetupScreen({ onStarted }: Props) {
 
   useEffect(() => {
     const words = jd.trim().split(/\s+/).length;
-    if (words < 20) {
+    if (words < 20 || !ai?.ready) {
       setDetected(null);
       return;
     }
@@ -87,7 +133,11 @@ export function SetupScreen({ onStarted }: Props) {
       clearTimeout(timer);
       setDetecting(false);
     };
-  }, [jd, resumeText]);
+  }, [jd, resumeText, ai?.ready]);
+
+  useEffect(() => {
+    getAiSettings().then(setAi).catch(() => {});
+  }, []);
 
   // ── Preload MediaPipe in the background ──────────────────────────────
   // The camera-check screen needs the FaceMesh WASM + model binary
@@ -146,6 +196,9 @@ export function SetupScreen({ onStarted }: Props) {
       });
       onStarted(data, { candidateName: name, jobTitle });
     } catch (e: any) {
+      if (e instanceof ApiError && e.code === "ai_not_configured") {
+        getAiSettings().then(setAi).catch(() => {});
+      }
       setError(e.message ?? "Failed to start interview");
     } finally {
       setSubmitting(false);
@@ -153,39 +206,22 @@ export function SetupScreen({ onStarted }: Props) {
   }
 
   const wordCount = jd.trim() ? jd.trim().split(/\s+/).length : 0;
-  const readyToBegin = name.trim().length > 1 && wordCount >= 10 && resumeText.trim().length >= 50;
+  const readyToBegin = !!ai?.ready && name.trim().length > 1 && wordCount >= 10 && resumeText.trim().length >= 50;
 
   return (
     <div className="min-h-screen bg-app text-foreground">
 
-      {/* ── Platform nav ─────────────────────────────────────────── */}
-      <header className="sticky top-0 z-20 bg-surface/80 backdrop-blur-xl border-b border-border">
-        <div className="max-w-7xl mx-auto px-6 h-14 flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-primary/15 border border-primary/30 flex items-center justify-center">
-              <Briefcase className="w-3.5 h-3.5 text-primary" />
-            </div>
-            <span className="font-serif text-base leading-none">tejaskrit</span>
-          </div>
-
-          <div className="flex items-center gap-1.5 text-sm text-muted-foreground ml-1">
-            <ChevronRight className="w-3.5 h-3.5" />
-            <span>Jobs</span>
-            <ChevronRight className="w-3.5 h-3.5" />
-            <span className="text-foreground font-medium">AI Interview Practice</span>
-          </div>
-
-          <div className="ml-auto hidden md:flex items-center gap-1.5 text-xs text-muted-foreground">
-            <span className="px-2.5 py-1 rounded-full bg-primary/15 text-primary border border-primary/30 font-medium">
-              1 · Setup
-            </span>
-            <ChevronRight className="w-3 h-3" />
-            <span className="flex items-center gap-1"><Video className="w-3 h-3" /> Interview</span>
-            <ChevronRight className="w-3 h-3" />
-            <span className="flex items-center gap-1"><BarChart3 className="w-3 h-3" /> Report</span>
-          </div>
+      <AppHeader>
+        <div className="hidden md:flex items-center gap-1.5 text-xs text-muted-foreground">
+          <span className="px-2.5 py-1 rounded-full bg-primary/15 text-primary border border-primary/30 font-medium">
+            1 · Setup
+          </span>
+          <ChevronRight className="w-3 h-3" />
+          <span className="flex items-center gap-1"><Video className="w-3 h-3" /> Interview</span>
+          <ChevronRight className="w-3 h-3" />
+          <span className="flex items-center gap-1"><BarChart3 className="w-3 h-3" /> Report</span>
         </div>
-      </header>
+      </AppHeader>
 
       {/* ── Main layout ──────────────────────────────────────────── */}
       <main className="max-w-7xl mx-auto px-6 lg:px-10 py-12 grid lg:grid-cols-[1fr_1.05fr] gap-12 lg:gap-16 items-start">
@@ -197,7 +233,7 @@ export function SetupScreen({ onStarted }: Props) {
           <div>
             <div className="inline-flex items-center gap-2 text-xs px-3 py-1.5 rounded-full border border-primary/30 bg-primary/10 text-primary mb-5 font-medium">
               <Sparkles className="w-3 h-3" />
-              Tejaskrit AI · Interview Practice
+              AI Interview Practice
             </div>
             <h1 className="font-serif text-[clamp(2.2rem,5vw,3.6rem)] leading-[1.05] tracking-tight">
               Prepare Before<br />You Apply
@@ -257,7 +293,7 @@ export function SetupScreen({ onStarted }: Props) {
           {/* Attribution */}
           <div className="flex items-center gap-2 text-xs text-muted-foreground pt-2 border-t border-border">
             <Shield className="w-3 h-3" />
-            Powered by Tejaskrit AI — results are for practice only and are not shared with employers
+            Results are for practice only and are never shared with employers
           </div>
         </section>
 
@@ -276,6 +312,8 @@ export function SetupScreen({ onStarted }: Props) {
               </div>
 
               <div className="space-y-5">
+
+                <AiStatus settings={ai} />
 
                 {/* Name */}
                 <FloatField
@@ -406,11 +444,13 @@ export function SetupScreen({ onStarted }: Props) {
 
                 <div className="flex items-center justify-between pt-1 text-[11px] text-muted-foreground">
                   <div className="flex items-center gap-1.5">
-                    <Shield className="w-3 h-3" /> End-to-end encrypted
+                    <Shield className="w-3 h-3" /> Recordings deleted after analysis
                   </div>
                   <div className={readyToBegin ? "text-success" : ""}>
                     {readyToBegin
                       ? "● Ready to begin"
+                      : !ai?.ready
+                      ? "○ Connect an AI provider"
                       : !name.trim() || wordCount < 10
                       ? "○ Fill name & job description"
                       : "○ Upload your resume to continue"}

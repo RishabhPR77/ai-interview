@@ -4,7 +4,7 @@ An end-to-end **AI interview practice platform**. A candidate pastes a **job des
 
 > **Repository layout** — this project ships as **two folders in one repo**:
 > - `ai-interviewer/` — the FastAPI **backend** (LLM orchestration, scoring, analysis)
-> - `ai-interviewer-ui/` — the React + Vite **frontend** (browser app)
+> - `ai-interview-ui/` — the React + Vite **frontend** (browser app)
 
 ---
 
@@ -49,7 +49,7 @@ An end-to-end **AI interview practice platform**. A candidate pastes a **job des
 - **Adaptive question selection** — the AI picks the next question based on rubric coverage gaps and how well the last answer went.
 - **Dynamic follow-ups** — weak or suspicious answers get an immediate, in-topic probing question.
 - **Real signal extraction**:
-  - Whisper transcription (Groq, with local fallback) + technical-term autocorrection
+  - Transcription with the user's chosen speech-to-text model + technical-term autocorrection
   - librosa audio analysis (pace, pauses, fillers, hedging, confidence language)
   - MediaPipe face/pose analysis (eye contact, expressions, posture, gestures, fatigue)
 - **Weighted rubric scoring** per rubric category, with a completion factor that penalizes incomplete interviews.
@@ -62,7 +62,7 @@ An end-to-end **AI interview practice platform**. A candidate pastes a **job des
 
 ```mermaid
 flowchart TB
-    subgraph UI["Frontend — React + Vite (ai-interviewer-ui)"]
+    subgraph UI["Frontend — React + Vite (ai-interview-ui)"]
         A[SetupScreen<br/>JD + resume + rubric] --> B[CameraCheckScreen<br/>MediaPipe live metrics]
         B --> C[PreInterviewScreen<br/>question preview]
         C --> D[InterviewScreen<br/>record 90–120s video answer]
@@ -71,8 +71,8 @@ flowchart TB
 
     subgraph API["Backend — FastAPI (ai-interviewer, port 8000)"]
         F["Router<br/>routes/interview.py"]
-        F --> G["Session store<br/>core/session_store.py<br/>in-memory"]
-        F --> H["LLM client<br/>core/groq_client.py<br/>MODEL_SMART / MODEL_FAST"]
+        F --> G["Session store<br/>core/session_store.py<br/>DB-persisted"]
+        F --> H["LLM client<br/>core/llm_client.py + core/llm.py<br/>user-chosen eval / fast models"]
         F --> I["Scoring engine<br/>core/scoring_engine.py"]
         F --> J["Question bank<br/>generated at /start"]
     end
@@ -83,7 +83,7 @@ flowchart TB
     end
 
     subgraph EXT["External services"]
-        M["Groq API<br/>gpt-oss-120b / gpt-oss-20b / Whisper"]
+        M["User's AI provider (BYO key)<br/>Anthropic · OpenAI · Groq · Gemini · OpenRouter"]
         N["ffmpeg<br/>compress + extract audio"]
     end
 
@@ -141,7 +141,7 @@ Every submitted video goes through a strict 4-step pipeline. Files are temporari
 flowchart TD
     A["Candidate video<br/>(webm/mp4 upload)"] --> B["[0/4] _compress_video<br/>ffmpeg scale=640:480 crf=28"]
     B --> C["[1/4] _extract_audio<br/>ffmpeg → 16kHz mono WAV"]
-    C --> D["[2/4] audio_analyzer<br/>Groq Whisper → transcript<br/>librosa → WPM, pauses, fillers, hedging, confidence"]
+    C --> D["[2/4] audio_analyzer<br/>user's STT model → transcript<br/>librosa → WPM, pauses, fillers, hedging, confidence"]
     D --> E["[3/4] video_analyzer<br/>MediaPipe FaceLandmarker + Pose<br/>→ eye contact %, posture, expressions, gestures, fatigue"]
     E --> F["[4/4] scoring_engine<br/>semantic similarity + LLM per-answer score"]
 
@@ -152,7 +152,7 @@ flowchart TD
     I --> K["synthesize follow-up question<br/>id = max_id + 1, is_follow_up"]
     K --> L["return next question to UI"]
 
-    subgraph LLM["Groq calls"]
+    subgraph LLM["LLM calls (user's models)"]
         M["score_answer (MODEL_SMART)"]
         N["generate_adaptive_followup (MODEL_FAST)"]
         O["select_next_question (MODEL_FAST)"]
@@ -207,7 +207,7 @@ stateDiagram-v2
     reported --> [*]: session deleted from store after report
 
     note right of created
-        session created in-memory with
+        session created (persisted to DB) with
         meta, question_bank, topic_coverage
         (started = 0 for every rubric category)
     end note
@@ -272,16 +272,16 @@ Beyond that, scoring is intentionally conservative: **untested categories count 
 ## Tech stack
 
 **Backend** (`ai-interviewer/`)
-- Python 3.12 · FastAPI · uvicorn
-- Groq API — `openai/gpt-oss-120b` (scoring/generation), `openai/gpt-oss-20b` (routing), `whisper-large-v3-turbo` (transcription)
-- MediaPipe (FaceLandmarker + Pose) · OpenCV · NumPy · librosa · sentence-transformers (optional)
-- Local Whisper fallback · ffmpeg (binary, `PATH`)
+- Python 3.12 · FastAPI · uvicorn · SQLAlchemy 2 (SQLite by default, Postgres in production)
+- **Bring-your-own-key LLMs** — Anthropic (official `anthropic` SDK), OpenAI, Groq, Google Gemini and OpenRouter (via the `openai` SDK's compatible endpoints). Users choose separate **evaluation**, optional **fast/routing** and **transcription** models.
+- Speech-to-text — Groq / OpenAI Whisper-family (`whisper-large-v3-turbo`, `gpt-transcribe`, …) or an audio-capable Gemini / OpenRouter chat model
+- Passwordless email OTP sign-in via **Brevo**; httpOnly server-side sessions; provider keys encrypted at rest (Fernet)
+- MediaPipe FaceLandmarker · OpenCV · NumPy · librosa · sentence-transformers (optional) · ffmpeg (binary, `PATH`)
 
-**Frontend** (`ai-interviewer-ui/`)
-- React 18 + TypeScript + Vite
-- Tailwind CSS (dark UI)
-- `@mediapipe/tasks-vision` (live camera metrics) · jsPDF (PDF report export)
-- Recharts-style charts for performance breakdown
+**Frontend** (`ai-interview-ui/`)
+- React 19 + TypeScript + Vite · Tailwind CSS v4 (dark UI) · framer-motion
+- Landing page, OTP login, Settings (API keys + model pickers), interview flow
+- MediaPipe FaceMesh (live camera metrics) · jsPDF (PDF export) · Recharts
 
 ---
 
@@ -291,34 +291,32 @@ Beyond that, scoring is intentionally conservative: **untested categories count 
 
 | Path | Purpose |
 |---|---|
-| `main.py` | FastAPI entrypoint. Loads `.env`, mounts CORS, includes router at `/api/v1`. `GET /` and `GET /health`. |
-| `routes/interview.py` | **All endpoints.** `/start`, `/detect-seniority`, `/answer`, `/skip`, `/end`; ffmpeg compress + audio extract; audio-only fallback path (skips video pipeline); follow-up synthesis; next-question routing. |
-| `core/groq_client.py` | LLM layer. `_call_groq` (5 attempts; reasoning_effort=low; retries with doubled tokens on `finish_reason=length`; soft truncation validation), rubric-driven question generation with per-category counts + targeted single-question backfill, per-answer scoring, follow-up generation, next-question selection, final summary, seniority detection. |
-| `core/scoring_engine.py` | Weighted rubric scoring (weight-0 categories excluded, primary-category proxy fallback), semantic similarity, behavioral heatmap, per-answer score assembly, final report assembly + LLM summary + hard safety net. |
-| `core/session_store.py` | In-memory session store (meta, question bank, asked IDs, conversation, topic coverage). |
-| `analysis/audio_analyzer.py` | Whisper transcription (Groq → local fallback), tech-term autocorrection, WPM, pause counting, filler/hedging detection, confidence-language score, silent-recording flag. |
-| `analysis/video_analyzer.py` | MediaPipe frame-by-frame analysis: eye contact (matrix + iris, glasses-safe), expressions/blendshapes, posture (pose + face matrix), gestures, nervousness, drowsiness/fatigue, event detection, engagement score, expression timeline. |
-| `prompts/templates.py` | All LLM prompt templates (question gen, single-question backfill, scoring, follow-up, routing, summary). |
-| `models/schemas.py` | Pydantic models: `Rubric` (validates sum=100), `StartInterviewRequest/Response`, `AudioSignals`, `VideoSignals`, `QuestionScore`, `FinalReport`. |
-| `test_interview.py` | Manual/test helper for exercising the pipeline. |
-| `.env` | `GROQ_API_KEY`, `WHISPER_MODEL` (gitignored). |
+| `main.py` | FastAPI app: startup (create tables, purge stale sessions), CORS, CSRF header check, security headers, `AIError` handler, routers at `/api/v1`, serves the built frontend with SPA fallback. |
+| `routes/auth.py` | `/auth/request-otp`, `/auth/verify-otp`, `/auth/logout`, `/auth/me` (GET/PATCH). Per-email + per-IP rate limits, attempt limits, single-use codes. |
+| `routes/account.py` | `/account/ai` (status + model choices), `/account/keys/{provider}` (verify → encrypt → store / delete), `/account/models/{provider}` (live model list), `DELETE /account`. |
+| `routes/interview.py` | `/start`, `/detect-seniority`, `/answer`, `/skip`, `/end` — all require sign-in and session ownership; run in FastAPI's threadpool. |
+| `core/config.py` | Environment config; refuses to start in `ENV=production` without secrets. |
+| `core/db.py` | SQLAlchemy models: users, OTP codes, auth sessions, provider keys, user settings, interview sessions. |
+| `core/llm.py` | Provider registry, JSON chat calls, transcription, error translation, model discovery/validation. |
+| `core/llm_client.py` | Interview prompts → LLM calls with retry/truncation handling (question generation + backfill, scoring, follow-ups, routing, summary, seniority). |
+| `core/ai_settings.py` | Loads a user's keys + model choices into an `AIConfig` for the request. |
+| `core/session_store.py` | Interview state, write-through persisted to the DB (survives restarts). |
+| `core/email.py` · `core/security.py` · `core/deps.py` | Brevo email, hashing/encryption helpers, `current_user` dependency. |
+| `analysis/audio_analyzer.py` | Transcription via the user's STT model, WPM, pauses, fillers, hedging, confidence-language score. |
+| `analysis/video_analyzer.py` | MediaPipe frame analysis: eye contact, expressions, posture, nervousness, drowsiness, engagement. |
+| `prompts/templates.py` | All LLM prompt templates. |
+| `models/schemas.py` | Pydantic request/response models. |
 
-### Frontend — `ai-interviewer-ui/`
+### Frontend — `ai-interview-ui/`
 
 | Path | Purpose |
 |---|---|
-| `src/App.tsx` | Screen state machine (`setup → camera-check → pre-interview → interview → report`), resume-from-localStorage banner, error toast. |
-| `src/lib/interview-api.ts` | Typed API client for all backend endpoints. |
-| `src/lib/mediapipe-loader.ts` | Preloads MediaPipe FaceMesh assets from CDN with cache-busting. |
-| `src/lib/export-pdf.ts` | jsPDF dark-themed PDF report generation. |
-| `src/lib/history.ts` | (empty by design — reserved slot). |
-| `src/components/interview/SetupScreen.tsx` | JD + resume input, rubric picker, seniority auto-detect, starts interview. |
-| `src/components/interview/CameraCheckScreen.tsx` | Live MediaPipe metrics feel-check before starting (gaze, posture, lighting). |
-| `src/components/interview/PreInterviewScreen.tsx` | Shows first question, rubric, checklist/tips. |
-| `src/components/interview/InterviewScreen.tsx` | Fullscreen record loop, per-answer upload, session persistence, completion. |
-| `src/components/interview/ReportScreen.tsx` | Overall scores, category breakdown, per-question feedback, heatmap, PDF export. |
-| `src/components/interview/PerformanceCharts.tsx` | Charts for performance breakdown. |
-| `src/components/interview/ComparePanel.tsx` | Candidate comparison UI. |
+| `src/App.tsx` | Page routing (`/`, `/login`, `/app`, `/settings`) + auth guard. |
+| `src/InterviewApp.tsx` | Interview state machine (`setup → camera-check → pre-interview → interview → report`). |
+| `src/pages/LandingPage.tsx` · `LoginPage.tsx` · `SettingsPage.tsx` | Marketing page, email-code sign-in, keys/models/profile/account deletion. |
+| `src/lib/api.ts` · `auth.tsx` · `account-api.ts` · `router.tsx` | Fetch wrapper (cookies + CSRF header), auth context, account endpoints, tiny router. |
+| `src/lib/interview-api.ts` | Interview endpoints. |
+| `src/components/interview/*` | Setup, camera check, pre-interview, interview, report screens. |
 
 ---
 
@@ -329,84 +327,82 @@ cd ai-interviewer
 python -m venv venv
 venv\Scripts\activate            # Windows; use `source venv/bin/activate` on Unix
 pip install -r requirements.txt
+cp .env.example .env             # all values optional in development
+uvicorn main:app --port 8000 --reload
 ```
 
-**`.env`** (create inside `ai-interviewer/`, already gitignored):
-
-```
-GROQ_API_KEY=your_groq_key_here
-WHISPER_MODEL=base
-```
-
-> **ffmpeg is required** and must be on `PATH` (`ffmpeg -version` should work). MediaPipe's face landmarker model (~30MB) auto-downloads to `~/​.cache/mediapipe` on first run.
-
-**Run:**
-
-```bash
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-Smoke-check: `http://127.0.0.1:8000/health` → `{"status":"ok","groq_key_set":true}`.
-
----
+- In development, `SECRET_KEY` / `ENCRYPTION_KEY` are generated under `ai-interviewer/data/`, and without `BREVO_API_KEY` the **sign-in code is printed in the server console**.
+- **ffmpeg is required** on `PATH`. The MediaPipe face model (~30MB) downloads to `~/.cache/mediapipe` on first use.
+- No server-side LLM key is needed — each user adds their own in **Settings**.
 
 ## Setup — Frontend
 
 ```bash
-cd ai-interviewer-ui
+cd ai-interview-ui
 npm install
-npm run dev        # → http://localhost:5173
+npm run dev        # → http://localhost:5173 (proxies /api to 127.0.0.1:8000)
 ```
 
-**`.env`** (inside `ai-interviewer-ui/`, gitignored):
+Leave `VITE_API_URL` unset in development: the Vite proxy keeps the API same-origin so the session cookie works.
 
-```
-VITE_API_URL=http://127.0.0.1:8000/api/v1
+## Production (single service)
+
+```bash
+docker build -t tejaskrit .
+docker run -p 8000:8000 --env-file ai-interviewer/.env -v tk-data:/data tejaskrit
 ```
 
-Open the Vite URL, grant camera + mic, and run an interview. MediaPipe FaceMesh loads from CDN on the camera-check screen.
+The image builds the frontend, installs ffmpeg + Python deps, bakes in the face model and serves everything from one origin. Required env in production: `ENV=production`, `APP_URL`, `SECRET_KEY`, `ENCRYPTION_KEY`, `BREVO_API_KEY`, `EMAIL_FROM_ADDRESS` (a Brevo-verified sender), and ideally `DATABASE_URL` (Postgres).
 
 ---
 
 ## API reference
 
-All routes are under the `/api/v1` prefix (`http://127.0.0.1:8000/api/v1`).
+All routes are under `/api/v1`. State-changing requests must send `X-Requested-With: tejaskrit`; authenticated routes use the `tk_session` httpOnly cookie.
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| GET | `/` | — | service status + endpoint list |
-| GET | `/health` | — | `status`, `groq_key_set` |
-| POST | `/interview/start` | JSON: `job_title`, `job_description`, `candidate_name`, `candidate_resume`, `num_questions`, `interview_type`, `difficulty`, `rubric` | `StartInterviewResponse` (session_id + first question) |
-| POST | `/interview/detect-seniority` | JSON: `job_description`, `resume_text` | `{difficulty, interview_type, reasoning}` |
-| POST | `/interview/answer` | multipart: `session_id`, `question_id`, `video` (file), `is_audio_only` (`true`/`false`, optional — audio-only answers skip video analysis) | next question, follow-up, or `{"status":"complete"}` + recent scores |
-| POST | `/interview/{session_id}/skip` | JSON: `question_id` | next question or complete |
-| POST | `/interview/end` | form: `session_id` | `FinalReport` (score, recommendation, breakdown, heatmap) |
-
-**Example — start:**
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/v1/interview/start \
-  -H "Content-Type: application/json" \
-  -d '{"job_title":"Backend Engineer","job_description":"...","candidate_name":"Alice","candidate_resume":"...","num_questions":6,"difficulty":"mid","rubric":{"technical_depth":35,"problem_solving":25,"communication_clarity":20,"confidence":10,"cultural_fit":10}}'
-```
+| POST | `/auth/request-otp` | `{email}` | `{ok, expires_in_seconds, resend_after_seconds}` |
+| POST | `/auth/verify-otp` | `{email, code}` | `{user, is_new}` + sets session cookie |
+| POST | `/auth/logout` | — | revokes the session |
+| GET / PATCH | `/auth/me` | PATCH: `{name}` | `{user}` |
+| GET / PUT | `/account/ai` | PUT: `{eval_provider, eval_model, fast_provider, fast_model, stt_provider, stt_model}` | providers, selection, `ready` |
+| PUT / DELETE | `/account/keys/{provider}` | PUT: `{api_key}` (verified before saving) | updated settings |
+| GET | `/account/models/{provider}` | — | `{llm: [...], stt: [...]}` for the saved key |
+| DELETE | `/account` | — | deletes account, keys, settings, in-progress interviews |
+| POST | `/interview/start` | `job_title`, `job_description`, `candidate_name`, `candidate_resume`, `num_questions`, `interview_type`, `difficulty`, `rubric` | session id + first question (409 `ai_not_configured` if setup incomplete) |
+| POST | `/interview/detect-seniority` | `{job_description, resume_text}` | `{difficulty, interview_type, reasoning}` |
+| POST | `/interview/answer` | multipart: `session_id`, `question_id`, `video`, `is_audio_only` | `202 {"status":"processing"}` — analysis runs in the background (409 `stale_question` / `answer_processing` for replays or double-submits) |
+| GET | `/interview/{session_id}/answer-status?question_id=` | — | `processing`, `error` (+ `detail`, re-submit allowed), or the next question / follow-up / `complete` |
+| GET | `/interview/{session_id}/state` | — | current question + status (used to resync) |
+| POST | `/interview/{session_id}/skip` | `{question_id}` | next question or complete |
+| POST | `/interview/end` | form: `session_id` | final report (session is then deleted) |
+| GET | `/health` | — | `{status, ffmpeg}` |
 
 ---
 
 ## Environment variables
 
-| Variable | Where | Purpose |
-|---|---|---|
-| `GROQ_API_KEY` | `ai-interviewer/.env` | LLM + Whisper access (required) |
-| `WHISPER_MODEL` | `ai-interviewer/.env` | Local fallback Whisper model, e.g. `base` |
-| `VITE_API_URL` | `ai-interviewer-ui/.env` | Backend base URL the frontend calls |
+See [`ai-interviewer/.env.example`](ai-interviewer/.env.example) for the full list.
+
+| Variable | Purpose |
+|---|---|
+| `ENV` | `production` enforces secrets, hides `/docs` |
+| `APP_URL` | Public URL (emails, Secure cookie detection) |
+| `SECRET_KEY` | Signs OTP hashes |
+| `ENCRYPTION_KEY` | Encrypts users' provider keys — back it up |
+| `DATABASE_URL` | Postgres URL in production (SQLite default) |
+| `BREVO_API_KEY`, `EMAIL_FROM_ADDRESS`, `EMAIL_FROM_NAME` | Sign-in emails |
+| `COOKIE_SAMESITE`, `CORS_ORIGINS` | Only for split frontend/backend hosting |
+| `MAX_UPLOAD_MB`, `LOCAL_WHISPER_FALLBACK` | Upload cap; optional offline Whisper (`requirements-local-whisper.txt`) |
 
 ---
 
 ## Troubleshooting
 
-- **`404 model_not_found` from Groq** — your API key must have access to the models in `core/groq_client.py` (`MODEL_SMART` / `MODEL_FAST`). If the key doesn't, the model names won't resolve and `detect_experience_level` silently falls back to defaults. Update the model constants to models available on your key (check via `https://console.groq.com/keys` / model list).
-- **Port stuck / "address already in use"** — an orphaned `uvicorn --reload` child can hold port 8000. Kill leftover python processes (`Get-Process python | Stop-Process -Force` on Windows) and restart.
-- **Frontend is 404ing** — make sure the backend is actually up on `127.0.0.1:8000` and `VITE_API_URL` matches.
-- **Audio not transcribed** — check ffmpeg is on `PATH`; Groq Whisper falls back to local Whisper (`WHISPER_MODEL`) automatically.
-- **No faces detected in video** — camera too dark or face off-frame; the analyzer prints a warning and uses neutral defaults.
-- **Low scores for a short interview** — by design. The completion factor `0.15 + 0.85 × (answered/total)` caps incomplete interviews, and untested rubric categories count as 0.
+- **"Your … API key was rejected"** — the key is invalid or revoked; replace it in Settings.
+- **"model not found"** — pick a model from the live list in Settings (it only shows models your key can use).
+- **Didn't get the sign-in email** — in development the code is in the backend console; in production check the Brevo sender is verified and look at Brevo's transactional logs.
+- **401 loops in development** — don't set `VITE_API_URL`; use the Vite proxy so the cookie is same-origin.
+- **Audio not transcribed** — check ffmpeg is on `PATH` and the transcription model in Settings.
+- **No faces detected in video** — camera too dark or face off-frame; the analyzer uses neutral defaults.

@@ -1,21 +1,84 @@
+"""
+Interview session state, persisted to the database.
+
+Every request (and every background answer job) loads its own copy with
+`load()`, mutates it with the helpers below and writes it back with `save()`.
+There is deliberately no shared in-memory cache: a background job and a
+status poll must never mutate the same dict.
+
+Read-check-write sequences that must not interleave (claiming a question for
+analysis, skipping, ending) run under `lock(session_id)`. The lock is
+per-process, so run a single instance per database — see the Dockerfile.
+"""
+import json
+import threading
+import time
 import uuid
-from typing import Optional
-from datetime import datetime
+from collections import defaultdict
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from typing import Iterator, Optional
 
-# Global session store — dict keyed by session_id
-# Each value is a full session dict
-_sessions: dict = {}
+from sqlalchemy import delete
+
+from core.db import InterviewSession, SessionLocal, utcnow
+
+_locks: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
+_locks_guard = threading.Lock()
+_last_purge = 0.0
 
 
-def create_session(meta: dict, question_bank: list) -> str:
-    session_id = str(uuid.uuid4())
-    _sessions[session_id] = {
-        "session_id": session_id,
-        "created_at": datetime.utcnow().isoformat(),
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _json_default(obj):
+    # numpy scalars / arrays from the analysis layer
+    if hasattr(obj, "item") and callable(obj.item):
+        try:
+            return obj.item()
+        except (ValueError, TypeError):
+            pass
+    if hasattr(obj, "tolist"):
+        return obj.tolist()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+@contextmanager
+def lock(session_id: str) -> Iterator[None]:
+    with _locks_guard:
+        session_lock = _locks[session_id]
+    with session_lock:
+        yield
+
+
+def save(session: dict) -> None:
+    snapshot = json.loads(json.dumps(session, default=_json_default))
+    with SessionLocal() as db:
+        row = db.get(InterviewSession, session["session_id"])
+        if row is None:
+            row = InterviewSession(id=session["session_id"], user_id=session["user_id"], data=snapshot)
+            db.add(row)
+        else:
+            row.data = snapshot
+        row.updated_at = utcnow()
+        db.commit()
+
+
+def create_session(meta: dict, question_bank: list, user_id: str) -> dict:
+    global _last_purge
+    # Opportunistic cleanup so long-running servers also drop abandoned interviews.
+    if time.monotonic() - _last_purge > 3600:
+        _last_purge = time.monotonic()
+        purge_stale()
+    session = {
+        "session_id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "created_at": _now_iso(),
         "meta": meta,                    # job, resume, rubric, difficulty
-        "question_bank": question_bank,  # all generated questions
+        "question_bank": question_bank,  # all generated questions (+ follow-ups as they're asked)
         "asked_question_ids": [],        # ids already asked
-        "current_question": question_bank[0] if question_bank else None,
+        "current_question": None,        # the question the candidate must answer next
         "conversation": [],              # list of answered Q&A with all signals
         "topic_coverage": {              # how many times each category probed
             "technical_depth": 0,
@@ -24,53 +87,70 @@ def create_session(meta: dict, question_bank: list) -> str:
             "confidence": 0,
             "cultural_fit": 0,
         },
+        "follow_ups_used": 0,
+        "answer_job": None,              # background analysis of the current answer
         "status": "ongoing",             # ongoing | complete
         "last_quality": "unknown",       # quality of last answer for adaptive logic
-        "start_time": datetime.utcnow().isoformat(),
+        "start_time": _now_iso(),
         "end_time": None,
     }
-    return session_id
+    return session
 
 
-def get_session(session_id: str) -> Optional[dict]:
-    return _sessions.get(session_id)
+def load(session_id: str, user_id: Optional[str] = None) -> Optional[dict]:
+    """Fresh copy from the DB. With user_id, returns None for someone else's session."""
+    with SessionLocal() as db:
+        row = db.get(InterviewSession, session_id)
+        if row is None or (user_id is not None and row.user_id != user_id):
+            return None
+        return json.loads(json.dumps(row.data))
 
 
-def update_session(session_id: str, updates: dict):
-    if session_id in _sessions:
-        _sessions[session_id].update(updates)
+def ask_question(session: dict, question: dict) -> None:
+    """Make `question` the one the candidate answers next."""
+    session["asked_question_ids"].append(question["id"])
+    session["current_question"] = question
 
 
-def append_conversation_entry(session_id: str, entry: dict):
-    if session_id in _sessions:
-        _sessions[session_id]["conversation"].append(entry)
+def increment_topic_coverage(session: dict, category: str) -> None:
+    coverage = session["topic_coverage"]
+    if category in coverage:
+        coverage[category] += 1
 
 
-def increment_topic_coverage(session_id: str, category: str):
-    if session_id in _sessions:
-        coverage = _sessions[session_id]["topic_coverage"]
-        if category in coverage:
-            coverage[category] += 1
+def answered_question_ids(session: dict) -> set:
+    return {entry.get("question_id") for entry in session["conversation"]}
 
 
-def mark_question_asked(session_id: str, question_id: int):
-    if session_id in _sessions:
-        _sessions[session_id]["asked_question_ids"].append(question_id)
-
-
-def get_remaining_questions(session_id: str) -> list:
-    session = get_session(session_id)
-    if not session:
-        return []
+def get_remaining_questions(session: dict) -> list:
     asked = set(session["asked_question_ids"])
-    return [q for q in session["question_bank"] if q["id"] not in asked]
+    return [q for q in session["question_bank"] if q["id"] not in asked and not q.get("is_follow_up")]
 
 
-def complete_session(session_id: str):
-    if session_id in _sessions:
-        _sessions[session_id]["status"] = "complete"
-        _sessions[session_id]["end_time"] = datetime.utcnow().isoformat()
+def main_questions_asked(session: dict) -> int:
+    """Planned questions asked so far — follow-ups don't use up the question budget."""
+    by_id = {q["id"]: q for q in session["question_bank"]}
+    return sum(1 for qid in session["asked_question_ids"] if not by_id.get(qid, {}).get("is_follow_up"))
 
 
-def delete_session(session_id: str):
-    _sessions.pop(session_id, None)
+def complete_session(session: dict) -> None:
+    session["status"] = "complete"
+    session["current_question"] = None
+    session["end_time"] = _now_iso()
+
+
+def delete_session(session_id: str) -> None:
+    with SessionLocal() as db:
+        db.execute(delete(InterviewSession).where(InterviewSession.id == session_id))
+        db.commit()
+    with _locks_guard:
+        _locks.pop(session_id, None)
+
+
+def purge_stale(max_age_hours: int = 48) -> int:
+    """Drop abandoned interviews (no activity for max_age_hours)."""
+    cutoff = utcnow() - timedelta(hours=max_age_hours)
+    with SessionLocal() as db:
+        result = db.execute(delete(InterviewSession).where(InterviewSession.updated_at < cutoff))
+        db.commit()
+    return result.rowcount or 0

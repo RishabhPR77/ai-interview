@@ -389,7 +389,7 @@ export function ReportScreen({ report, candidateName, jobTitle, onRestart, ended
                     <Metric label="Comms" value={q.communication_score} />
                     <Metric label="Confidence" value={q.confidence_score} />
                     <Metric label="WPM" value={q.wpm ?? q.audio_signals?.words_per_minute} raw />
-                    <Metric label="Eye contact" value={q.eye_contact_pct ?? q.video_signals?.eye_contact_percentage} suffix="%" raw />
+                    <Metric label="Eye contact" value={q.video_signals?.video_available === false ? undefined : (q.eye_contact_pct ?? q.video_signals?.eye_contact_percentage)} suffix="%" raw />
                   </div>
 
                   {q.justification && (

@@ -35,6 +35,8 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-app: #0a0a0f;
+  --color-surface: #111118;
   --font-serif: 'DM Serif Display', serif;
   --font-sans: 'DM Sans', sans-serif;
 }
@@ -83,8 +85,6 @@
 }
 
 @layer utilities {
-  .bg-surface { background-color: #111118; }
-  .bg-app { background-color: #0a0a0f; }
   .glow-primary {
     box-shadow: 0 10px 40px -10px color-mix(in oklab, var(--primary) 50%, transparent);
   }

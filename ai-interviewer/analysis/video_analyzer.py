@@ -37,7 +37,7 @@ def analyze_video(video_path: str, sample_interval_seconds: float = 0.5) -> dict
         frame_idx = 0
         faces_detected = 0
         frames_sampled = 0
-        model_path = _ensure_face_model()
+        model_path = _ensure_model("face_landmarker.task", FACE_MODEL_URL)
 
         base_options = mp_python.BaseOptions(model_asset_path=model_path)
         options = mp_vision.FaceLandmarkerOptions(
@@ -51,21 +51,24 @@ def analyze_video(video_path: str, sample_interval_seconds: float = 0.5) -> dict
             min_tracking_confidence=0.2,
         )
 
-        # Try to set up MediaPipe Pose for accurate posture detection.
-        # Newer MediaPipe (0.10+) removed mp.solutions — gracefully fall back
-        # to matrix/landmark-based posture if unavailable.
-        pose_processor = None
-        mp_pose = None
+        # Body pose (posture + hand gestures) via the Tasks PoseLandmarker —
+        # mp.solutions.pose no longer exists in current MediaPipe releases.
+        # If the model can't load, posture falls back to face geometry only.
+        pose_landmarker = None
         try:
-            mp_pose = mp.solutions.pose
-            pose_processor = mp_pose.Pose(
-                static_image_mode=False,
-                min_detection_confidence=0.4,
+            pose_options = mp_vision.PoseLandmarkerOptions(
+                base_options=mp_python.BaseOptions(
+                    model_asset_path=_ensure_model("pose_landmarker_lite.task", POSE_MODEL_URL)
+                ),
+                running_mode=mp_vision.RunningMode.VIDEO,
+                num_poses=1,
+                min_pose_detection_confidence=0.4,
+                min_pose_presence_confidence=0.4,
                 min_tracking_confidence=0.4,
             )
-            print("      [video] MediaPipe Pose loaded (body posture active)")
-        except AttributeError:
-            print("      [video] mp.solutions not available — falling back to face-based posture")
+            pose_landmarker = mp_vision.PoseLandmarker.create_from_options(pose_options)
+        except Exception as e:
+            print(f"      [video] Pose model unavailable ({e}) — using face-based posture only")
 
         with mp_vision.FaceLandmarker.create_from_options(options) as landmarker:
             last_timestamp_ms = -1
@@ -80,53 +83,63 @@ def analyze_video(video_path: str, sample_interval_seconds: float = 0.5) -> dict
                     last_timestamp_ms = timestamp_ms
                     frames_sampled += 1
                     result, face_found = _analyze_frame(
-                        frame, landmarker, pose_processor, mp_pose, timestamp_ms, frame_idx / fps
+                        frame, landmarker, pose_landmarker, timestamp_ms, frame_idx / fps
                     )
+                    result["face_found"] = face_found
                     if face_found:
                         faces_detected += 1
                     frame_results.append(result)
                 frame_idx += 1
 
         cap.release()
-        if pose_processor is not None:
-            pose_processor.close()
+        if pose_landmarker is not None:
+            pose_landmarker.close()
 
         print(f"      [video] Face detected in {faces_detected}/{frames_sampled} sampled frames")
 
         if not frame_results:
-            return _empty_video_signals("no frames processed")
+            return _empty_video_signals("the recording contained no readable video frames")
 
         if faces_detected == 0:
             print("      [video] WARNING: No faces detected — video may be too dark or face not visible.")
+            return _empty_video_signals("no face was visible in the recording (too dark, or off-camera)")
 
         # Detect glasses from iris variance across all frames
         glasses_detected = _detect_glasses(frame_results)
         if glasses_detected:
             print("      [video] Glasses detected — using head-pose-only eye contact (iris landmarks disabled)")
 
-        return _aggregate(frame_results, duration, glasses_detected)
+        signals = _aggregate(frame_results, duration, glasses_detected)
+        signals["face_detected_pct"] = round(faces_detected / frames_sampled * 100, 1) if frames_sampled else 0.0
+        signals["pose_tracking"] = pose_landmarker is not None
+        return signals
 
     except Exception as e:
         import traceback
         print(f"      [video] ERROR in analyze_video: {e}")
         traceback.print_exc()
-        return _empty_video_signals(str(e))
+        return _empty_video_signals("video analysis failed on the server")
 
 
-def _ensure_face_model() -> str:
+FACE_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+POSE_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
+
+
+def _ensure_model(filename: str, url: str) -> str:
     import urllib.request
     model_dir = os.path.join(os.path.expanduser("~"), ".cache", "mediapipe")
     os.makedirs(model_dir, exist_ok=True)
-    model_path = os.path.join(model_dir, "face_landmarker.task")
+    model_path = os.path.join(model_dir, filename)
     if not os.path.exists(model_path):
-        print("Downloading MediaPipe face landmarker model (~30MB)...")
-        url = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
-        urllib.request.urlretrieve(url, model_path)
+        print(f"Downloading MediaPipe model {filename}...")
+        tmp_path = model_path + ".part"
+        urllib.request.urlretrieve(url, tmp_path)
+        os.replace(tmp_path, model_path)  # never leave a half-written model behind
         print("Model downloaded.")
     return model_path
 
 
-def _analyze_frame(frame, landmarker, pose_processor, mp_pose, timestamp_ms: int, timestamp_sec: float):
+def _analyze_frame(frame, landmarker, pose_landmarker, timestamp_ms: int, timestamp_sec: float):
     """Returns (result_dict, face_was_detected)."""
     cv2 = _get_cv2()
     mp = _get_mp()
@@ -227,7 +240,7 @@ def _analyze_frame(frame, landmarker, pose_processor, mp_pose, timestamp_ms: int
     posture_detail = None
     posture_score  = 5.0
 
-    body_posture, gesture_detected = _posture_from_pose(frame, pose_processor, mp_pose, rgb)
+    body_posture, gesture_detected = _posture_from_pose(pose_landmarker, mp_image, timestamp_ms)
 
     if body_posture is not None:
         posture_detail = _compute_posture_rich(landmarks, matrix)
@@ -331,27 +344,30 @@ def _detect_glasses(frame_results: list) -> bool:
     return avg_std > 0.07
 
 
-def _posture_from_pose(frame, pose_processor, mp_pose, rgb_frame) -> tuple:
+def _posture_from_pose(pose_landmarker, mp_image, timestamp_ms: int) -> tuple:
     """
-    Use MediaPipe Pose body landmarks for accurate posture scoring + gesture detection.
+    Use MediaPipe PoseLandmarker body landmarks for posture scoring + gesture detection.
     Checks: shoulder tilt, forward lean, head drop.
     Returns (posture_score or None, gesture_detected bool).
     """
+    if pose_landmarker is None:
+        return None, False
     try:
-        results = pose_processor.process(rgb_frame)
+        from mediapipe.tasks.python.vision import PoseLandmark as PL
+
+        results = pose_landmarker.detect_for_video(mp_image, timestamp_ms)
         if not results.pose_landmarks:
             return None, False
 
-        lm = results.pose_landmarks.landmark
-        PL = mp_pose.PoseLandmark
+        lm = results.pose_landmarks[0]
 
-        left_shoulder  = lm[PL.LEFT_SHOULDER]
-        right_shoulder = lm[PL.RIGHT_SHOULDER]
-        left_ear       = lm[PL.LEFT_EAR]
-        right_ear      = lm[PL.RIGHT_EAR]
-        nose           = lm[PL.NOSE]
-        lw = lm[PL.LEFT_WRIST]
-        rw = lm[PL.RIGHT_WRIST]
+        left_shoulder  = lm[PL.LEFT_SHOULDER.value]
+        right_shoulder = lm[PL.RIGHT_SHOULDER.value]
+        left_ear       = lm[PL.LEFT_EAR.value]
+        right_ear      = lm[PL.RIGHT_EAR.value]
+        nose           = lm[PL.NOSE.value]
+        lw = lm[PL.LEFT_WRIST.value]
+        rw = lm[PL.RIGHT_WRIST.value]
 
         # 1. Shoulder tilt — how uneven are the shoulders?
         shoulder_tilt = abs(left_shoulder.y - right_shoulder.y)
@@ -371,9 +387,9 @@ def _posture_from_pose(frame, pose_processor, mp_pose, rgb_frame) -> tuple:
         posture_score = max(0.0, min(10.0, 10.0 - tilt_penalty - lean_penalty - drop_penalty))
 
         # Gesture detection: wrist raised above shoulder = active hand gesture
-        gesture_detected = (
-            (lw.visibility > 0.5 and lw.y < left_shoulder.y - 0.05) or
-            (rw.visibility > 0.5 and rw.y < right_shoulder.y - 0.05)
+        gesture_detected = bool(
+            ((lw.visibility or 0) > 0.5 and lw.y < left_shoulder.y - 0.05) or
+            ((rw.visibility or 0) > 0.5 and rw.y < right_shoulder.y - 0.05)
         )
 
         return round(posture_score, 1), gesture_detected
@@ -704,10 +720,13 @@ def _aggregate(frame_results: list, duration: float, glasses_detected: bool = Fa
         "tired": 3.0, "yawning": 2.0, "disgusted": 2.5,
         "contemptuous": 2.0, "smirking": 4.0,
     }
+    # Confidence-weighted mean over frames where a face was found. Frames
+    # without a face carry no expression information and must not drag it down.
+    face_frames = [f for f in frame_results if f.get("face_found")]
+    weight_sum = sum(f["expression_confidence"] for f in face_frames)
     avg_expression = round(
-        sum(expr_scores.get(f["expression"], 5.0) * f["expression_confidence"]
-            for f in frame_results) / total, 1
-    )
+        sum(expr_scores.get(f["expression"], 5.0) * f["expression_confidence"] for f in face_frames) / weight_sum, 1
+    ) if weight_sum > 0 else 5.0
 
     # ── Nervousness ──────────────────────────────────────────────────────────
     all_nerv    = [n for f in frame_results for n in f["nervousness_signals"]]
@@ -823,6 +842,8 @@ def _aggregate(frame_results: list, duration: float, glasses_detected: bool = Fa
         "expression_timeline":     timeline,
         "look_away_events":        _detect_look_away_events(frame_results, glasses_detected),
         "glasses_detected":        glasses_detected,
+        "video_available":         True,
+        "unavailable_reason":      None,
     }
 
 
@@ -848,11 +869,14 @@ def _empty_video_signals(reason: str = "") -> dict:
         "looking_down_pct":        0.0,
         "micro_expression_events": [],
         "attention_arc":           "unknown",
-        "nervousness_indicators":  [f"analysis_unavailable: {reason}"],
+        "nervousness_indicators":  [],
         "gesture_frequency":       0.0,
         "expression_timeline":     [],
         "look_away_events":        [],
         "glasses_detected":        False,
+        # Callers must treat every number above as "unknown", not as a measurement.
+        "video_available":         False,
+        "unavailable_reason":      reason or "video analysis unavailable",
     }
 
 

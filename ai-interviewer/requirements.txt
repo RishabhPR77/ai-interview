@@ -1,14 +1,25 @@
+# Web
 fastapi==0.136.3
-uvicorn[standard]
+uvicorn[standard]==0.52.4
 python-multipart==0.0.30
-groq
-openai-whisper
-opencv-python
+pydantic[email]==2.13.4
+python-dotenv==1.2.3
+httpx==0.28.1
+
+# Data / auth
+SQLAlchemy==2.1.6
+psycopg[binary]>=3.2      # only used when DATABASE_URL points at Postgres
+cryptography==50.0.2
+
+# LLM + speech-to-text providers (users bring their own keys)
+anthropic==2.3.0
+openai==3.38.0
+
+# Analysis
+opencv-python-headless==5.0.0.93
 mediapipe==0.10.35
 librosa==0.11.0
 soundfile==0.13.1
 nltk==3.9.4
 numpy
 scipy==1.17.1
-pydantic==2.13.4
-python-dotenv

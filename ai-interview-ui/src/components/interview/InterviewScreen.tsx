@@ -3,7 +3,8 @@ import {
   Circle, Loader2, CheckCircle2, Square, Video, RotateCcw, Send, LogOut,
   AlertOctagon, Maximize2, Minimize2, SkipForward, MicOff, Briefcase, Volume2, VolumeX,
 } from "lucide-react";
-import { submitAnswer, endInterview, skipQuestion, type StartResponse, type ReportResponse } from "@/lib/interview-api";
+import { submitAnswer, endInterview, skipQuestion, getInterviewState, type StartResponse, type ReportResponse } from "@/lib/interview-api";
+import { ApiError } from "@/lib/api";
 
   const SESSION_KEY = 'tejaskrit_session'
 
@@ -464,7 +465,7 @@ import { submitAnswer, endInterview, skipQuestion, type StartResponse, type Repo
     function applyNextQuestion(res: Awaited<ReturnType<typeof submitAnswer>>) {
       if (res.question_id && res.question) {
         const isFollow = !!res.is_follow_up;
-        const newIndex = isFollow ? qIndex : Math.min(qIndex + 1, total);
+        const newIndex = isFollow ? qIndex : Math.min(res.question_number ?? qIndex + 1, total);
         setCurrentQ({
           question_id: res.question_id,
           question: res.question,
@@ -484,8 +485,27 @@ import { submitAnswer, endInterview, skipQuestion, type StartResponse, type Repo
       setProcessingStep(-1);
     }
 
+    // The server says this question was already handled (double-submit, lost
+    // response, another tab): jump to wherever the interview actually is.
+    async function resyncWithServer(): Promise<boolean> {
+      try {
+        const state = await getInterviewState(start.session_id);
+        if (state.status === "complete") {
+          localStorage.removeItem(SESSION_KEY);
+          const report = await endInterview(start.session_id);
+          onComplete(report);
+          return true;
+        }
+        applyNextQuestion(state);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
     async function submitPending() {
       if (!pendingBlob) return;
+      setError(null);
       setRecState('processing');
       setProcessingStep(0);
       stepTimerRef.current = window.setInterval(() => {
@@ -512,9 +532,16 @@ import { submitAnswer, endInterview, skipQuestion, type StartResponse, type Repo
           stepTimerRef.current = null;
         }
         setProcessingStep(-1);
-        setRecState('idle');
-        setError(e.message ?? "Submission failed");
-        onError(e.message ?? "Submission failed");
+        if (e instanceof ApiError && e.code === "stale_question" && await resyncWithServer()) {
+          setError("That answer had already been received — continuing with the next question.");
+          return;
+        }
+        // Keep the recording so a transient failure never costs the candidate
+        // their answer: back to review, where Submit retries.
+        setRecState('review');
+        const msg = e.message ?? "Submission failed";
+        setError(`${msg} Your recording is saved — press Submit to try again.`);
+        onError(msg);
       }
     }
 
@@ -532,6 +559,7 @@ import { submitAnswer, endInterview, skipQuestion, type StartResponse, type Repo
         }
         applyNextQuestion(res);
       } catch (e: any) {
+        if (e instanceof ApiError && e.code === "stale_question" && await resyncWithServer()) return;
         setError(e.message ?? "Skip failed");
       } finally {
         setSkipping(false);

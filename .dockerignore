@@ -1,0 +1,15 @@
+**/.env
+**/.env.*
+!**/.env.example
+**/node_modules
+**/dist
+**/venv
+**/.venv
+**/__pycache__
+**/*.pyc
+ai-interviewer/data
+.git
+.claude
+*.log
+test_*.mp4
+test_*.wav

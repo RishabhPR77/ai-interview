@@ -1,5 +1,10 @@
-from datetime import datetime
-from core import groq_client, session_store
+from datetime import datetime, timezone
+from core import llm_client
+
+
+def answered_count(conversation: list) -> int:
+    """Planned questions the candidate actually answered (skips and follow-ups don't count)."""
+    return sum(1 for e in conversation if not e.get("skipped") and not e.get("is_follow_up"))
 
 
 # ── Semantic similarity (sentence-transformers, optional) ──────────────────
@@ -120,7 +125,7 @@ def compute_weighted_score(per_question_scores: list[dict], rubric: dict, total_
     # Linear scaling from 0 (no questions answered) to 1 (all questions answered),
     # with a small floor so a single strong answer isn't worth literally zero,
     # but an interview that's mostly skipped can't land anywhere near a normal score.
-    answered = len(per_question_scores)
+    answered = answered_count(per_question_scores)
     completion_ratio = min(1.0, answered / max(total_questions, 1))
     completion_factor = 0.15 + (0.85 * completion_ratio)
     overall = round(overall * completion_factor, 1)
@@ -166,6 +171,7 @@ def score_single_answer(session: dict, question: dict, audio_signals: dict, vide
             "answer_text": answer_text,
             "primary_category": question.get("category", ""),
             "is_intro": question.get("is_intro", False),
+            "is_follow_up": question.get("is_follow_up", False),
             "audio_signals": audio_signals,
             "video_signals": video_signals,
             "content_score": 0,
@@ -186,7 +192,7 @@ def score_single_answer(session: dict, question: dict, audio_signals: dict, vide
     if semantic_similarity >= 0:
         print(f"      Semantic similarity (Q vs A): {semantic_similarity:.3f}")
 
-    scores = groq_client.score_answer(
+    scores = llm_client.score_answer(
         job_title=meta["job_title"],
         difficulty=meta["difficulty"],
         question=question,
@@ -200,7 +206,7 @@ def score_single_answer(session: dict, question: dict, audio_signals: dict, vide
     follow_up_triggered = scores.get("follow_up_needed", False)
 
     if follow_up_triggered:
-        fu = groq_client.generate_adaptive_followup(
+        fu = llm_client.generate_adaptive_followup(
             question=question["text"],
             answer=answer_text,
             quality="weak" if scores.get("content_score", 5) < 5 else "suspicious",
@@ -214,6 +220,7 @@ def score_single_answer(session: dict, question: dict, audio_signals: dict, vide
         "answer_text": answer_text,
         "primary_category": question.get("category", ""),
         "is_intro": question.get("is_intro", False),
+        "is_follow_up": question.get("is_follow_up", False),
         "audio_signals": audio_signals,
         "video_signals": video_signals,
         "content_score": scores.get("content_score", 0),
@@ -230,11 +237,8 @@ def score_single_answer(session: dict, question: dict, audio_signals: dict, vide
     }
 
 
-def generate_final_report(session_id: str) -> dict:
-    session = session_store.get_session(session_id)
-    if not session:
-        raise ValueError(f"Session {session_id} not found")
-
+def generate_final_report(session: dict) -> dict:
+    session_id = session["session_id"]
     meta = session["meta"]
     conversation = session["conversation"]
     rubric = meta["rubric"]
@@ -245,6 +249,7 @@ def generate_final_report(session_id: str) -> dict:
     completion_ratio = weighted_scores.pop("completion_ratio", 100.0)
 
     heatmap = build_behavioral_heatmap(conversation)
+    answered = answered_count(conversation)
 
     transcript_lines = []
     for i, entry in enumerate(conversation):
@@ -260,7 +265,7 @@ def generate_final_report(session_id: str) -> dict:
         )
     full_transcript = "\n---\n".join(transcript_lines)
 
-    summary_data = groq_client.generate_final_summary(
+    summary_data = llm_client.generate_final_summary(
         job_title=meta["job_title"],
         difficulty=meta["difficulty"],
         candidate_name=meta["candidate_name"],
@@ -268,7 +273,7 @@ def generate_final_report(session_id: str) -> dict:
         rubric=rubric,
         weighted_scores=weighted_scores,
         overall_score=overall_score,
-        questions_answered=len(conversation),
+        questions_answered=answered,
         total_questions=total_questions,
         completion_pct=completion_ratio,
     )
@@ -276,12 +281,12 @@ def generate_final_report(session_id: str) -> dict:
     # Hard safety net — don't rely on the LLM alone to enforce this.
     # If fewer than half the planned questions were answered, force a
     # non-committal recommendation regardless of what the LLM returned.
-    if total_questions > 0 and (len(conversation) / total_questions) < 0.5:
+    if total_questions > 0 and (answered / total_questions) < 0.5:
         summary_data["recommendation"] = "maybe"
         summary_data["recommendation_confidence"] = "low"
 
-    start = datetime.fromisoformat(session["start_time"])
-    end = datetime.fromisoformat(session.get("end_time") or datetime.utcnow().isoformat())
+    start = _parse_time(session["start_time"])
+    end = _parse_time(session.get("end_time")) if session.get("end_time") else datetime.now(timezone.utc)
     duration_minutes = round((end - start).total_seconds() / 60, 1)
 
     return {
@@ -290,6 +295,9 @@ def generate_final_report(session_id: str) -> dict:
         "job_title": meta["job_title"],
         "overall_score": overall_score,
         "completion_ratio": completion_ratio,
+        "questions_answered": answered,
+        "questions_skipped": sum(1 for e in conversation if e.get("skipped")),
+        "total_questions": total_questions,
         "recommendation": summary_data.get("recommendation", "maybe"),
         "recommendation_confidence": summary_data.get("recommendation_confidence", "low"),
         "summary": summary_data.get("summary", ""),
@@ -303,3 +311,9 @@ def generate_final_report(session_id: str) -> dict:
         "interview_duration_minutes": duration_minutes,
         "topic_coverage": session["topic_coverage"],
     }
+
+
+def _parse_time(value: str) -> datetime:
+    """Session timestamps are ISO strings; older sessions stored naive UTC."""
+    dt = datetime.fromisoformat(value)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)

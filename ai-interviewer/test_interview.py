@@ -2,8 +2,8 @@
 Scoring Test — uses the real transcript from test_small.mp4
 against a question it actually matches (system design).
 
-Run from ai_interviewer folder:
-    python test_scoring.py
+Run from ai_interviewer folder (needs GROQ_API_KEY in .env):
+    python test_interview.py
 """
 
 import json
@@ -12,7 +12,15 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-from core import groq_client
+from core import llm, llm_client
+
+# The app normally takes models + keys from the signed-in user's settings;
+# this script uses a Groq key from the environment instead.
+_key = os.getenv("GROQ_API_KEY", "")
+if not _key:
+    sys.exit("Set GROQ_API_KEY in .env to run this script.")
+_target = llm.Target("groq", os.getenv("TEST_MODEL", "openai/gpt-oss-120b"), _key)
+llm._current.set(llm.AIConfig(eval=_target, fast=_target, stt=llm.Target("groq", "whisper-large-v3-turbo", _key)))
 
 TRANSCRIPT = (
     "To design a scalable real-time analytics dashboard, I would like to use a message queue "
@@ -56,7 +64,7 @@ def score_and_print(label, question, expected_min_content=5):
     print(f"  Category: {question['category']}")
 
     try:
-        result = groq_client.score_answer(
+        result = llm_client.score_answer(
             job_title="Junior Data Science Intern",
             difficulty="junior",
             question=question,
