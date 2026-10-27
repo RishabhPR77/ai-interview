@@ -408,7 +408,18 @@ It installs ffmpeg and the Python deps, bakes in the MediaPipe models and runs a
 **Where to host it**
 
 - **Railway / Render / Fly.io / DigitalOcean App Platform** — deploy the GitHub repo (the root `Dockerfile` is detected), add the host's Postgres, set the variables above, generate a public domain, set the health check path to `/health`, keep one replica. On Railway, use `DATABASE_URL=${{Postgres.DATABASE_URL}}` and `APP_URL=https://${{RAILWAY_PUBLIC_DOMAIN}}`; don't set `PORT` yourself.
-- **Any VPS** (Hetzner, DigitalOcean, Oracle Cloud's free Arm VM, …) — install Docker, run the image next to a `postgres` container, and put a reverse proxy with automatic HTTPS (e.g. Caddy) in front.
+- **Azure for Students (free, no card)** — what the live deployment runs on. The offer gives $100 credit plus 12 months of a free `Standard_B2ats_v2` VM (2 vCPU, 1 GB). Sign up at https://azure.microsoft.com/free/students; if your college email isn't accepted, the GitHub Student Developer Pack unlocks the same offer.
+  1. **Pick a region the AI providers serve.** Student subscriptions only allow a few regions (Portal → Policy → Assignments → *Allowed resource deployment regions*), and the free size isn't offered in all of them. Avoid Hong Kong (`eastasia`): Groq, OpenAI and Anthropic refuse requests from there. Korea Central works.
+  2. **Create the VM** — Ubuntu Server 24.04 x64, size `Standard_B2ats_v2`, SSH key login, inbound ports 22/80/443, 64 GB Premium SSD, and a DNS name label on its public IP. [`deploy/azure/create-vm-korea.sh`](deploy/azure/create-vm-korea.sh) does all of this in one Cloud Shell command (replace the SSH public key and DNS label with your own).
+  3. **On the VM**, clone the repo and run the setup script. It adds 4 GB swap, installs Docker, writes `deploy/azure/.env` with generated secrets (asks for the domain, Brevo key and sender), and starts the app + Postgres + Caddy with automatic HTTPS:
+
+     ```bash
+     git clone https://github.com/RishabhPR77/ai-interview.git && cd ai-interview
+     bash deploy/azure/setup.sh
+     ```
+
+  4. Back up `ENCRYPTION_KEY` from `deploy/azure/.env`. To update later: `git pull && cd deploy/azure && sudo docker compose up -d --build`.
+- **Any VPS** (Hetzner, DigitalOcean, Oracle Cloud's free Arm VM, …) — the same `deploy/azure` stack works on any Ubuntu server with Docker: run `bash deploy/azure/setup.sh` with your domain pointed at the server.
 - **Hugging Face Spaces** — Docker Spaces need a paid PRO plan since mid-2026. Spaces can only make outbound connections on ports 80, 443 and 8080, so **an external Postgres (port 5432) is unreachable**: leave `DATABASE_URL` unset and the app uses SQLite under `/data`. That data is wiped on every restart unless you attach a storage bucket mounted at `/data`. With PRO: create a *public* Docker Space, add the variables as Space secrets (`APP_URL=https://<user>-<space>.hf.space`), then deploy the committed code:
 
   ```bash
