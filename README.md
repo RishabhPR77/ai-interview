@@ -409,7 +409,7 @@ It installs ffmpeg and the Python deps, bakes in the MediaPipe models and runs a
 
 - **Railway / Render / Fly.io / DigitalOcean App Platform** — deploy the GitHub repo (the root `Dockerfile` is detected), add the host's Postgres, set the variables above, generate a public domain, set the health check path to `/health`, keep one replica. On Railway, use `DATABASE_URL=${{Postgres.DATABASE_URL}}` and `APP_URL=https://${{RAILWAY_PUBLIC_DOMAIN}}`; don't set `PORT` yourself.
 - **Any VPS** (Hetzner, DigitalOcean, Oracle Cloud's free Arm VM, …) — install Docker, run the image next to a `postgres` container, and put a reverse proxy with automatic HTTPS (e.g. Caddy) in front.
-- **Hugging Face Spaces** — Docker Spaces need a paid PRO plan since mid-2026. With one: create a *public* Docker Space, add the variables as Space secrets (`APP_URL=https://<user>-<space>.hf.space`, e.g. a Neon Postgres URL for `DATABASE_URL`), then deploy the committed code:
+- **Hugging Face Spaces** — Docker Spaces need a paid PRO plan since mid-2026. Spaces can only make outbound connections on ports 80, 443 and 8080, so **an external Postgres (port 5432) is unreachable**: leave `DATABASE_URL` unset and the app uses SQLite under `/data`. That data is wiped on every restart unless you attach a storage bucket mounted at `/data`. With PRO: create a *public* Docker Space, add the variables as Space secrets (`APP_URL=https://<user>-<space>.hf.space`), then deploy the committed code:
 
   ```bash
   pip install -U huggingface_hub && hf auth login
