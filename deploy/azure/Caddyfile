@@ -1,0 +1,7 @@
+# Caddy gets and renews a Let's Encrypt certificate for $DOMAIN automatically.
+# It ignores client-sent X-Forwarded-For and sets the real client IP, which the
+# app's sign-in rate limiter relies on.
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy app:8000
+}

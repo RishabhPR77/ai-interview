@@ -29,7 +29,8 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg libgl1 libglib2.0-0 libgles2 libegl1 curl \
  && rm -rf /var/lib/apt/lists/*
 
-RUN useradd --create-home --uid 10001 app \
+# UID 1000: Hugging Face Spaces runs containers as user 1000.
+RUN useradd --create-home --uid 1000 app \
  && mkdir -p /data /home/app/.cache/mediapipe \
  && chown -R app:app /data /home/app/.cache
 
