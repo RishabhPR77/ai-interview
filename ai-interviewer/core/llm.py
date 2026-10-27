@@ -310,8 +310,20 @@ _model_cache: dict[tuple, tuple[float, dict]] = {}
 _MODEL_CACHE_TTL = 600
 
 
+def _model(mid: str, name: Optional[str] = None, detail: str = "") -> dict:
+    """One entry in the Settings model dropdown."""
+    return {"id": mid, "name": name or mid, "detail": detail}
+
+
+def _context(tokens) -> str:
+    if not tokens:
+        return ""
+    return f"{tokens / 1_000_000:g}M context" if tokens >= 1_000_000 else f"{round(tokens / 1000)}K context"
+
+
 def list_models(provider: str, api_key: str) -> dict:
-    """Return {"llm": [...], "stt": [...]} for this key. Raises AIError on a bad key."""
+    """Return {"llm": [model...], "stt": [model...]} for this key, each model
+    {"id", "name", "detail"}. Raises AIError on a bad key."""
     cache_key = (provider, api_key[-12:], hash(api_key))
     hit = _model_cache.get(cache_key)
     if hit and time.monotonic() - hit[0] < _MODEL_CACHE_TTL:
@@ -320,22 +332,24 @@ def list_models(provider: str, api_key: str) -> dict:
     target = Target(provider, "-", api_key)
     try:
         if provider == "anthropic":
-            ids = [m.id for m in _anthropic_client(api_key).models.list(limit=100)]
-            result = {"llm": ids, "stt": []}
+            result = _list_anthropic(api_key)
         elif provider == "openrouter":
             result = _list_openrouter(api_key)
+        elif provider == "gemini":
+            result = _list_gemini(api_key)
         else:
-            ids = sorted({m.id.removeprefix("models/") for m in _openai_client(target).models.list()})
+            models = list(_openai_client(target).models.list())
             if provider == "openai":
-                stt = [i for i in ids if ("transcribe" in i or i.startswith("whisper"))
+                # The list has only ids and creation times; newest first.
+                ids = [m.id for m in sorted(models, key=lambda m: m.created or 0, reverse=True)]
+                stt = [_model(i) for i in ids if ("transcribe" in i or i.startswith("whisper"))
                        and "realtime" not in i and "diarize" not in i]
-                llm = [i for i in ids if re.match(r"^(gpt-|o\d|chatgpt)", i) and not _NON_CHAT.search(i)]
-            elif provider == "groq":
-                stt = [i for i in ids if "whisper" in i]
-                llm = [i for i in ids if not _NON_CHAT.search(i) and "orpheus" not in i and "playai" not in i]
-            else:  # gemini
-                llm = [i for i in ids if i.startswith("gemini") and not _NON_CHAT.search(i)]
-                stt = [i for i in llm if "flash" in i or "pro" in i or "argon" in i]
+                llm = [_model(i) for i in ids if re.match(r"^(gpt-|o\d|chatgpt)", i) and not _NON_CHAT.search(i)]
+            else:  # groq — models carry `active` and `context_window`
+                live = sorted((m for m in models if getattr(m, "active", True) is not False), key=lambda m: m.id)
+                stt = [_model(m.id) for m in live if "whisper" in m.id]
+                llm = [_model(m.id, detail=_context(getattr(m, "context_window", None))) for m in live
+                       if not _NON_CHAT.search(m.id) and "orpheus" not in m.id and "playai" not in m.id]
             result = {"llm": llm, "stt": stt}
     except AIError:
         raise
@@ -346,6 +360,38 @@ def list_models(provider: str, api_key: str) -> dict:
     return result
 
 
+def _list_anthropic(api_key: str) -> dict:
+    # The default listing holds active + deprecated models (retired ones are excluded).
+    llm = []
+    for m in _anthropic_client(api_key).models.list(limit=1000):
+        lifecycle = getattr(m, "lifecycle", None)
+        detail = "deprecated" if lifecycle == "deprecated" else _context(getattr(m, "max_input_tokens", None))
+        llm.append(_model(m.id, getattr(m, "display_name", None), detail))
+    return {"llm": llm, "stt": []}
+
+
+def _list_gemini(api_key: str) -> dict:
+    # The native endpoint (unlike the OpenAI-compatible one) gives display names
+    # and which methods each model supports. Header auth keeps the key out of URLs/logs.
+    resp = httpx.get(
+        "https://generativelanguage.googleapis.com/v1beta/models",
+        params={"pageSize": 1000}, headers={"x-goog-api-key": api_key}, timeout=30,
+    )
+    if resp.status_code >= 400:
+        message = (resp.json().get("error") or {}).get("message", "") if resp.content else ""
+        if resp.status_code in (400, 401, 403) and "key" in message.lower():
+            raise AIError("Your Google Gemini API key was rejected.", 400)
+        raise AIError(f"Google Gemini couldn't list models: {message or resp.status_code}", 502, retryable=True)
+    llm = []
+    for m in resp.json().get("models", []):
+        mid = m.get("name", "").removeprefix("models/")
+        if (mid.startswith("gemini") and "generateContent" in (m.get("supportedGenerationMethods") or [])
+                and not _NON_CHAT.search(mid)):
+            llm.append(_model(mid, m.get("displayName"), _context(m.get("inputTokenLimit"))))
+    # Gemini chat models accept audio, so any of them can transcribe.
+    return {"llm": llm, "stt": list(llm)}
+
+
 def _list_openrouter(api_key: str) -> dict:
     headers = {"Authorization": f"Bearer {api_key}"}
     # /models is public, so check the key itself first.
@@ -354,19 +400,31 @@ def _list_openrouter(api_key: str) -> dict:
         raise AIError("Your OpenRouter API key was rejected.", 400)
     resp = httpx.get("https://openrouter.ai/api/v1/models", headers=headers, timeout=30)
     resp.raise_for_status()
-    models = resp.json().get("data", [])
     llm, stt = [], []
-    for m in models:
-        mid = m.get("id", "")
+    for m in resp.json().get("data", []):
         arch = m.get("architecture") or {}
-        inputs = arch.get("input_modalities") or []
-        outputs = arch.get("output_modalities") or ["text"]
-        if "text" not in outputs:
+        if "text" not in (arch.get("output_modalities") or ["text"]):
             continue
-        llm.append(mid)
-        if "audio" in inputs:
-            stt.append(mid)
-    return {"llm": sorted(llm), "stt": sorted(stt)}
+        entry = _model(m.get("id", ""), m.get("name"), _openrouter_price(m.get("pricing") or {}))
+        llm.append(entry)
+        if "audio" in (arch.get("input_modalities") or []):
+            stt.append(entry)
+    llm.sort(key=lambda e: e["name"].lower())
+    stt.sort(key=lambda e: e["name"].lower())
+    return {"llm": llm, "stt": stt}
+
+
+def _openrouter_price(pricing: dict) -> str:
+    """OpenRouter prices are USD per token; show them per 1M tokens."""
+    try:
+        prompt, completion = float(pricing.get("prompt", 0)), float(pricing.get("completion", 0))
+    except (TypeError, ValueError):
+        return ""
+    if prompt < 0 or completion < 0:  # e.g. openrouter/auto: priced by the model it routes to
+        return "price varies"
+    if prompt == 0 and completion == 0:
+        return "free"
+    return f"${prompt * 1e6:.2f} in · ${completion * 1e6:.2f} out per 1M"
 
 
 def validate_key(provider: str, api_key: str) -> None:

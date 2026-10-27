@@ -2,6 +2,8 @@
 
 An end-to-end **AI interview practice platform**. A candidate pastes a **job description**, uploads a **resume**, and is interviewed on video by an AI that generates **adaptive, role-tailored questions** — then receives a detailed performance report scored on **content, audio behavior, and video behavior**.
 
+**🔗 Live app: https://tejaskrit-rishabh.koreacentral.cloudapp.azure.com** — sign in with your email, add an API key from any supported provider (Groq has a free tier), and start an interview. It runs on Azure for Students; see [Production & deployment](#production--deployment) to host your own.
+
 > **Repository layout** — this project ships as **two folders in one repo**:
 > - `ai-interviewer/` — the FastAPI **backend** (LLM orchestration, scoring, analysis)
 > - `ai-interview-ui/` — the React + Vite **frontend** (browser app)

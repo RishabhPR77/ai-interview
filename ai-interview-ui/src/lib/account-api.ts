@@ -58,5 +58,13 @@ export const saveAiSelection = (s: AiSelection) => api<AiSettings>('/account/ai'
 export const saveProviderKey = (p: ProviderId, apiKey: string) =>
   api<AiSettings>(`/account/keys/${p}`, { method: 'PUT', json: { api_key: apiKey } })
 export const removeProviderKey = (p: ProviderId) => api<AiSettings>(`/account/keys/${p}`, { method: 'DELETE' })
+/** A model the key can use, as listed by the provider's own models API. */
+export interface ModelOption {
+  id: string
+  name: string
+  /** Context window, price or "deprecated" — empty when the provider gives nothing. */
+  detail: string
+}
+
 export const listProviderModels = (p: ProviderId) =>
-  api<{ provider: ProviderId; llm: string[]; stt: string[] }>(`/account/models/${p}`)
+  api<{ provider: ProviderId; llm: ModelOption[]; stt: ModelOption[] }>(`/account/models/${p}`)

@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   AlertTriangle, ArrowRight, AudioLines, Brain, CheckCircle2, ExternalLink, Eye, EyeOff, KeyRound,
-  Loader2, Lock, RefreshCw, Trash2, User as UserIcon, Zap,
+  Loader2, Lock, PlayCircle, RefreshCw, Sparkles, Trash2, User as UserIcon, Zap,
 } from 'lucide-react'
 import { toast, Toaster } from 'sonner'
 import { AppHeader } from '@/components/AppHeader'
+import { ModelSelect, type SelectOption } from '@/components/ModelSelect'
 import { ApiError } from '@/lib/api'
 import {
   deleteAccount, getAiSettings, listProviderModels, removeProviderKey, saveAiSelection, saveProviderKey,
   updateProfile,
-  type AiSelection, type AiSettings, type ProviderId, type ProviderInfo,
+  type AiSelection, type AiSettings, type ModelOption, type ProviderId, type ProviderInfo,
 } from '@/lib/account-api'
 import { useAuth } from '@/lib/auth'
 import { Link, navigate, useLocation } from '@/lib/router'
@@ -178,7 +179,7 @@ function ProviderCard({ p, onChange }: { p: ProviderInfo; onChange: (s: AiSettin
 
 // ── Model pickers ──────────────────────────────────────────────────────────
 
-type ModelLists = Partial<Record<ProviderId, { llm: string[]; stt: string[] } | { error: string } | 'loading'>>
+type ModelLists = Partial<Record<ProviderId, { llm: ModelOption[]; stt: ModelOption[] } | { error: string } | 'loading'>>
 
 function ModelPicker({
   label, hint, icon: Icon, kind, providers, provider, model, lists, onLoad, onChange,
@@ -194,15 +195,23 @@ function ModelPicker({
 
   useEffect(() => { if (provider) onLoad(provider) }, [provider, onLoad])
 
-  const options = useMemo(() => {
-    if (!current) return []
+  const loaded = list && typeof list === 'object' && !('error' in list) ? list : null
+  const options = useMemo<SelectOption[]>(() => {
+    if (!current || !loaded) return []
     const suggested = kind === 'stt' ? current.suggested_stt : kind === 'fast' ? [current.suggested_fast, ...current.suggested_llm] : current.suggested_llm
-    const live = list && typeof list === 'object' && !('error' in list) ? (kind === 'stt' ? list.stt : list.llm) : []
+    const live = kind === 'stt' ? loaded.stt : loaded.llm
     // Suggestions the key can actually use first, then everything else it can see.
-    const liveSet = new Set(live)
-    const ordered = [...suggested.filter(s => !live.length || liveSet.has(s)), ...live]
-    return Array.from(new Set(ordered))
-  }, [current, list, kind])
+    const byId = new Map(live.map(m => [m.id, m]))
+    const recommended = Array.from(new Set(suggested)).flatMap(id => {
+      const m = byId.get(id)
+      return m ? [{ ...m, recommended: true }] : []
+    })
+    const rest = live.filter(m => !recommended.some(r => r.id === m.id))
+    const all: SelectOption[] = [...recommended, ...rest]
+    // Keep a saved model visible even if the provider stopped listing it.
+    if (model && !byId.has(model)) all.unshift({ id: model, name: model, detail: 'current choice · not in your key’s list' })
+    return all
+  }, [current, loaded, kind, model])
 
   function pickProvider(id: string) {
     if (!id) return onChange(null, null)
@@ -211,7 +220,6 @@ function ModelPicker({
     onChange(p.id, first ?? '')
   }
 
-  const listId = `models-${kind}`
   return (
     <div className="rounded-2xl border border-border bg-app/40 p-4 sm:p-5">
       <div className="flex items-start gap-3 mb-4">
@@ -234,36 +242,35 @@ function ModelPicker({
             {usable.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
           </select>
           <div>
-            <input
-              list={listId}
-              value={model ?? ''}
-              onChange={e => onChange(provider, e.target.value)}
-              disabled={!provider}
-              placeholder="Model ID"
-              spellCheck={false}
-              aria-label={`${label} model`}
-              className={`${inputCls} font-mono`}
-            />
-            <datalist id={listId}>{options.map(o => <option key={o} value={o} />)}</datalist>
+            {list && typeof list === 'object' && 'error' in list ? (
+              // Only when the provider's model list can't be fetched: fall back to typing an ID.
+              <input
+                value={model ?? ''}
+                onChange={e => onChange(provider, e.target.value)}
+                placeholder="Model ID"
+                spellCheck={false}
+                aria-label={`${label} model`}
+                className={`${inputCls} font-mono`}
+              />
+            ) : (
+              <ModelSelect
+                options={options}
+                value={model}
+                onChange={m => onChange(provider, m)}
+                disabled={!provider || !loaded}
+                placeholder={!provider ? 'Choose a provider first' : !loaded ? 'Loading models…' : 'Choose a model'}
+                label={`${label} model`}
+              />
+            )}
             <div className="mt-1.5 text-[11px] text-muted-foreground min-h-4">
-              {list === 'loading' && <span className="inline-flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Loading models your key can use…</span>}
-              {list && typeof list === 'object' && 'error' in list && <span className="text-warning">Couldn't list models ({list.error}). You can still type a model ID.</span>}
-              {list && typeof list === 'object' && !('error' in list) && (
-                <span>{(kind === 'stt' ? list.stt : list.llm).length} models available · type to search or enter any model ID</span>
+              {list === 'loading' && <span className="inline-flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Loading the models your key can use…</span>}
+              {list && typeof list === 'object' && 'error' in list && <span className="text-warning">Couldn't load the model list ({list.error}). Type a model ID instead.</span>}
+              {loaded && (
+                options.length === 0
+                  ? <span className="text-warning">Your key can't use any {kind === 'stt' ? 'transcription' : 'chat'} models from this provider.</span>
+                  : <span>{options.length} models your key can use{options.some(o => o.recommended) && <> · <Sparkles className="inline w-3 h-3 text-primary -mt-0.5" /> recommended</>}</span>
               )}
             </div>
-            {options.length > 0 && (
-              <div className="mt-1 flex flex-wrap gap-1.5">
-                {options.slice(0, 4).map(o => (
-                  <button key={o} type="button" onClick={() => onChange(provider, o)}
-                    className={`text-[11px] font-mono px-2 py-1 rounded-lg border transition ${
-                      o === model ? 'border-primary/50 bg-primary/15 text-primary' : 'border-border text-muted-foreground hover:text-foreground hover:border-primary/30'
-                    }`}>
-                    {o}
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
         </div>
       )}
@@ -296,8 +303,9 @@ function ModelsCard({ settings, onChange }: { settings: AiSettings; onChange: (s
   async function save() {
     setBusy(true)
     try {
-      onChange(await saveAiSelection(effective))
-      toast.success('Model choices saved')
+      const saved = await saveAiSelection(effective)
+      onChange(saved)
+      toast.success(saved.ready ? 'Saved — you’re ready to start an interview' : 'Model choices saved')
     } catch (err) {
       toast.error(errMsg(err))
     } finally {
@@ -351,12 +359,26 @@ function ModelsCard({ settings, onChange }: { settings: AiSettings; onChange: (s
           onChange={(p, m) => setDraft(d => ({ ...d, stt_provider: p, stt_model: m }))}
         />
       </div>
-      <div className="mt-5 flex items-center justify-end gap-3">
-        {dirty && <span className="text-xs text-muted-foreground">Unsaved changes</span>}
-        <button onClick={save} disabled={!dirty || !valid || busy} className={btnPrimary}>
-          {busy && <Loader2 className="w-4 h-4 animate-spin" />} Save models
-        </button>
-      </div>
+      {settings.ready && !dirty ? (
+        // Setup is complete and saved: the only thing left to do is start.
+        <div className="mt-5 rounded-2xl border border-success/30 bg-success/[0.06] p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-4">
+          <CheckCircle2 className="w-6 h-6 text-success shrink-0" />
+          <div className="flex-1">
+            <div className="font-medium">You’re all set.</div>
+            <div className="text-sm text-muted-foreground">Your key and models are saved. Next: paste a job description and your resume, then answer on camera.</div>
+          </div>
+          <Link href="/app" className={`${btnPrimary} px-5 py-3 text-base glow-primary`}>
+            <PlayCircle className="w-5 h-5" /> Start interview
+          </Link>
+        </div>
+      ) : (
+        <div className="mt-5 flex items-center justify-end gap-3">
+          {dirty && <span className="text-xs text-muted-foreground">Unsaved changes — save to continue</span>}
+          <button onClick={save} disabled={!dirty || !valid || busy} className={btnPrimary}>
+            {busy && <Loader2 className="w-4 h-4 animate-spin" />} Save models
+          </button>
+        </div>
+      )}
     </Card>
   )
 }
@@ -441,7 +463,7 @@ export function SettingsPage() {
                   </span></>}
             </div>
             {settings.ready && (
-              <Link href="/app" className={btnPrimary}>Start practicing <ArrowRight className="w-4 h-4" /></Link>
+              <Link href="/app" className={btnPrimary}>Start interview <ArrowRight className="w-4 h-4" /></Link>
             )}
           </div>
         )}
