@@ -45,7 +45,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     await api('/auth/logout', { method: 'POST' }).catch(() => {})
     // The resumable-interview pointer belongs to this user; don't leave it for the next one.
-    try { localStorage.removeItem('tejaskrit_session') } catch { /* storage unavailable */ }
+    try {
+      localStorage.removeItem('tejaskrit_session')
+      localStorage.removeItem('tejaskrit_last_report')
+    } catch { /* storage unavailable */ }
     setUser(null)
   }, [])
 

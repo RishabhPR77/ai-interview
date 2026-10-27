@@ -385,7 +385,7 @@ function DangerZone() {
         <div className="flex-1">
           <h2 className="font-serif text-xl">Delete account</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Permanently deletes your account, saved API keys, model choices and any interview in progress. This can't be undone.
+            Permanently deletes your account, saved API keys, model choices, saved reports and any interview in progress. This can't be undone.
           </p>
           <div className="mt-4 flex flex-col sm:flex-row gap-2">
             <input value={confirm} onChange={e => setConfirm(e.target.value)} placeholder='Type "delete" to confirm' className={`${inputCls} sm:max-w-xs`} />

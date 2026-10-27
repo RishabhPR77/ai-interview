@@ -326,7 +326,6 @@ import { ApiError } from "@/lib/api";
       endingEarlyRef.current = true;
       setEndingEarly(true);
       try {
-        localStorage.removeItem(SESSION_KEY);
         const report = await endInterview(start.session_id);
         streamRef.current?.getTracks().forEach(t => t.stop());
         if (timerRef.current) window.clearInterval(timerRef.current);
@@ -491,7 +490,6 @@ import { ApiError } from "@/lib/api";
       try {
         const state = await getInterviewState(start.session_id);
         if (state.status === "complete") {
-          localStorage.removeItem(SESSION_KEY);
           const report = await endInterview(start.session_id);
           onComplete(report);
           return true;
@@ -519,7 +517,6 @@ import { ApiError } from "@/lib/api";
         await new Promise(r => setTimeout(r, 400));
 
         if (res.status === "complete") {
-          localStorage.removeItem(SESSION_KEY);
           const report = await endInterview(start.session_id);
           onComplete(report);
           return;
@@ -552,7 +549,6 @@ import { ApiError } from "@/lib/api";
       try {
         const res = await skipQuestion(start.session_id, currentQ.question_id);
         if (res.status === "complete") {
-          localStorage.removeItem(SESSION_KEY);
           const report = await endInterview(start.session_id);
           onComplete(report);
           return;

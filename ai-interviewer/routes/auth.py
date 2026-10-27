@@ -8,9 +8,13 @@ POST /auth/verify-otp   → exchanges the code for an httpOnly session cookie;
 POST /auth/logout       → revokes the current session
 GET  /auth/me           → the signed-in user
 """
+import logging
 import time
 from collections import defaultdict, deque
 from datetime import timedelta
+from typing import Optional
+
+import httpx
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, EmailStr, Field
@@ -20,6 +24,7 @@ from sqlalchemy.orm import Session
 from core.config import (
     COOKIE_SAMESITE, COOKIE_SECURE, OTP_MAX_ATTEMPTS, OTP_MAX_PER_HOUR,
     OTP_RESEND_COOLDOWN_SECONDS, OTP_TTL_MINUTES, SESSION_COOKIE_NAME, SESSION_TTL_DAYS,
+    TURNSTILE_SECRET_KEY, TURNSTILE_SITE_KEY,
 )
 from core.db import AuthSession, OtpCode, User, as_utc, get_db, utcnow
 from core.deps import current_user
@@ -27,6 +32,9 @@ from core.email import EmailError, send_otp_email
 from core.security import generate_otp, hash_otp, hash_token, new_session_token, otp_matches
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
+log = logging.getLogger("tejaskrit.auth")
+
+TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 
 # Per-IP throttle on top of the per-email limits stored in the DB. In-memory is
 # fine for a single instance; put a shared store (Redis) here if you scale out.
@@ -53,6 +61,36 @@ def _check_ip_rate(ip: str) -> None:
 
 class OtpRequest(BaseModel):
     email: EmailStr
+    # Cloudflare Turnstile token; required when TURNSTILE_SECRET_KEY is set.
+    turnstile_token: Optional[str] = Field(default=None, max_length=2048)
+
+
+def _verify_turnstile(token: Optional[str], ip: str) -> None:
+    """Stops scripts from using the sign-in form to send email (Brevo quota,
+    sender reputation). No-op when Turnstile isn't configured."""
+    if not TURNSTILE_SECRET_KEY:
+        return
+    if not token:
+        raise HTTPException(status_code=400, detail={
+            "code": "captcha_required", "message": "Please complete the verification check.",
+        })
+    try:
+        resp = httpx.post(
+            TURNSTILE_VERIFY_URL,
+            data={"secret": TURNSTILE_SECRET_KEY, "response": token, "remoteip": ip},
+            timeout=10,
+        )
+        result = resp.json()
+    except (httpx.HTTPError, ValueError) as e:
+        log.error("Turnstile verification unavailable: %s", e)
+        raise HTTPException(status_code=503, detail={
+            "code": "captcha_unavailable", "message": "Couldn't run the verification check. Please try again.",
+        })
+    if not result.get("success"):
+        log.info("Turnstile rejected token: %s", result.get("error-codes"))
+        raise HTTPException(status_code=400, detail={
+            "code": "captcha_failed", "message": "Verification failed or expired. Please try again.",
+        })
 
 
 class OtpVerify(BaseModel):
@@ -73,9 +111,17 @@ def user_payload(user: User) -> dict:
     }
 
 
+@router.get("/config")
+def auth_config():
+    """Public settings the sign-in page needs."""
+    return {"turnstile_site_key": TURNSTILE_SITE_KEY or None}
+
+
 @router.post("/request-otp")
 def request_otp(body: OtpRequest, request: Request, db: Session = Depends(get_db)):
-    _check_ip_rate(_client_ip(request))
+    ip = _client_ip(request)
+    _check_ip_rate(ip)
+    _verify_turnstile(body.turnstile_token, ip)
     email = body.email.lower()
     now = utcnow()
 

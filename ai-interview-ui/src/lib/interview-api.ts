@@ -117,6 +117,7 @@ export interface ReportResponse {
   behavioral_heatmap: unknown[]
   interview_duration_minutes: number
   topic_coverage: Record<string, number>
+  report_expires_at?: string
 }
 
 export interface SeniorityResult {
@@ -194,10 +195,31 @@ export function skipQuestion(session_id: string, question_id: number): Promise<A
   return api(`/interview/${session_id}/skip`, { method: 'POST', json: { question_id } })
 }
 
+/** Re-open a finished report (the server keeps it for 24 hours). */
+export async function getReport(session_id: string): Promise<ReportResponse> {
+  return normalizeReport(await api<ReportResponse>(`/interview/${session_id}/report`))
+}
+
 export async function endInterview(session_id: string): Promise<ReportResponse> {
   const fd = new FormData()
   fd.append('session_id', session_id)
-  const report = await api<ReportResponse>('/interview/end', { method: 'POST', body: fd })
+  try {
+    return normalizeReport(await api<ReportResponse>('/interview/end', { method: 'POST', body: fd }))
+  } catch (e) {
+    // The report may have been generated even though the response was lost.
+    if (e instanceof ApiError && (e.status === 0 || e.status >= 500)) {
+      await new Promise(r => setTimeout(r, 2000))
+      try {
+        return await getReport(session_id)
+      } catch {
+        /* fall through to the original error */
+      }
+    }
+    throw e
+  }
+}
+
+function normalizeReport(report: ReportResponse): ReportResponse {
   report.per_question_scores = (report.per_question_scores || []).map(q => ({
     ...q,
     question: q.question_text || q.question,
