@@ -354,6 +354,15 @@ docker run -p 8000:8000 --env-file ai-interviewer/.env -v tk-data:/data tejaskri
 
 The image builds the frontend, installs ffmpeg + Python deps, bakes in the face model and serves everything from one origin. Required env in production: `ENV=production`, `APP_URL`, `SECRET_KEY`, `ENCRYPTION_KEY`, `BREVO_API_KEY`, `EMAIL_FROM_ADDRESS` (a Brevo-verified sender), and ideally `DATABASE_URL` (Postgres).
 
+**Free hosting on Hugging Face Spaces** (Docker Space, free CPU tier) with a free Neon Postgres: add the variables above as Space secrets (`APP_URL=https://<user>-<space>.hf.space`, `DATABASE_URL` = Neon connection string), then deploy the committed code with
+
+```bash
+pip install -U huggingface_hub && hf auth login
+python deploy/hf_space.py <user>/<space>
+```
+
+The script creates a public Docker Space if it doesn't exist. Open the app at the `*.hf.space` URL — the huggingface.co Space page embeds it in a frame, where the sign-in cookie can't be set. Free Spaces sleep after ~48h without visits.
+
 ---
 
 ## API reference
