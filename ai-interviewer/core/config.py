@@ -91,8 +91,21 @@ CORS_ORIGINS = [o.strip() for o in os.getenv(
     "CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
 ).split(",") if o.strip()]
 
+# Cloudflare Turnstile on the sign-in form. Leave both unset to disable (dev).
+TURNSTILE_SITE_KEY = os.getenv("TURNSTILE_SITE_KEY", "").strip()
+TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY", "").strip()
+if bool(TURNSTILE_SITE_KEY) != bool(TURNSTILE_SECRET_KEY):
+    raise RuntimeError("Set both TURNSTILE_SITE_KEY and TURNSTILE_SECRET_KEY, or neither")
+
+# ── Usage limits (protect the server's CPU; AI calls are billed to users' keys) ──
+MAX_INTERVIEWS_PER_DAY = int(os.getenv("MAX_INTERVIEWS_PER_DAY", "10"))
+# Longest answer recording analysed. The web app stops recording at 3 minutes.
+MAX_ANSWER_SECONDS = int(os.getenv("MAX_ANSWER_SECONDS", "240"))
+# Finished reports stay retrievable this long, then are deleted.
+REPORT_RETENTION_HOURS = int(os.getenv("REPORT_RETENTION_HOURS", "24"))
+
 # ── Uploads / serving ───────────────────────────────────────────────────────
-MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "200"))
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "100"))
 # Answers are analysed in background threads; each video analysis is CPU-heavy.
 ANALYSIS_WORKERS = int(os.getenv("ANALYSIS_WORKERS", "2"))
 # A job still "processing" after this long (e.g. the server restarted) is failed

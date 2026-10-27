@@ -128,6 +128,27 @@ class InterviewSession(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class UsageEvent(Base):
+    """Append-only log used for per-user quotas (e.g. interviews started per day)."""
+    __tablename__ = "usage_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class InterviewReport(Base):
+    """A finished report, kept briefly so a lost response or refresh doesn't lose it."""
+    __tablename__ = "interview_reports"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)  # = interview session id
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    data: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 def init_db() -> None:
     Base.metadata.create_all(engine)
 

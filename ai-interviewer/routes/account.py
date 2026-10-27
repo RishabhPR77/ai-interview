@@ -13,7 +13,10 @@ from sqlalchemy.orm import Session
 
 from core.ai_settings import get_keys, get_settings_row
 from core.config import COOKIE_SAMESITE, COOKIE_SECURE, SESSION_COOKIE_NAME
-from core.db import AuthSession, InterviewSession, ProviderKey, User, UserSettings, as_utc, get_db, utcnow
+from core.db import (
+    AuthSession, InterviewReport, InterviewSession, ProviderKey, UsageEvent, User, UserSettings, as_utc,
+    get_db, utcnow,
+)
 from core.deps import current_user
 from core.llm import PROVIDERS, STT_PROVIDERS, AIError, list_models, validate_key
 from core.security import decrypt_secret, encrypt_secret, key_hint
@@ -149,6 +152,8 @@ def get_models(provider: ProviderId, user: User = Depends(current_user), db: Ses
 def delete_account(response: Response, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """Permanently delete the account, its keys, settings and any in-progress interviews."""
     db.execute(delete(InterviewSession).where(InterviewSession.user_id == user.id))
+    db.execute(delete(InterviewReport).where(InterviewReport.user_id == user.id))
+    db.execute(delete(UsageEvent).where(UsageEvent.user_id == user.id))
     db.execute(delete(ProviderKey).where(ProviderKey.user_id == user.id))
     db.execute(delete(AuthSession).where(AuthSession.user_id == user.id))
     db.execute(delete(UserSettings).where(UserSettings.user_id == user.id))

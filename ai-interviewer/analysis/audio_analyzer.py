@@ -96,6 +96,33 @@ def _transcribe_local(audio_path: str) -> dict:
     return result
 
 
+# Loudness floor for speech (RMS ~0.008 ≈ -42 dBFS). An open mic with nobody
+# talking sits well below it; normal speech is roughly -30 to -12 dBFS.
+SPEECH_RMS_THRESHOLD = 0.008
+MIN_SPEECH_SECONDS = 1.5
+
+# Whisper-family models tend to invent these on silent or near-silent audio.
+_SILENCE_HALLUCINATIONS = {
+    "you", "bye", "bye bye", "thank you", "thank you very much", "thanks",
+    "thanks for watching", "thank you for watching", "thank you so much for watching",
+    "please subscribe", "subtitles by the amaraorg community", "so", "okay",
+}
+
+
+def _speech_seconds(y: np.ndarray, sr: int) -> float:
+    """Seconds of audio loud enough to plausibly be speech."""
+    librosa = _get_librosa()
+    frame_length = int(sr * 0.05)
+    hop_length = frame_length // 2
+    rms = librosa.feature.rms(y=y, frame_length=frame_length, hop_length=hop_length)[0]
+    return float((rms > SPEECH_RMS_THRESHOLD).sum() * hop_length / sr)
+
+
+def _is_silence_hallucination(transcript: str) -> bool:
+    normalized = " ".join(re.sub(r"[^a-z ]", "", transcript.lower()).split())
+    return normalized in _SILENCE_HALLUCINATIONS
+
+
 def compute_audio_signals(audio_path: str) -> dict:
     """
     Full audio analysis pipeline.
@@ -113,10 +140,18 @@ def compute_audio_signals(audio_path: str) -> dict:
         word_count = len(words)
 
         # ── Detect silent/empty recordings ──────────────────────────────────
-        # If there's no meaningful transcript (candidate didn't speak, or only
-        # said a couple of stray words), flag it so the scoring layer can
-        # short-circuit instead of asking the LLM to score nothing.
-        is_silent = word_count < 3
+        # If the candidate didn't really speak, flag it so the scoring layer
+        # short-circuits instead of asking the LLM to score nothing. Whisper
+        # often "hears" a stock phrase in silence, so the transcript alone isn't
+        # enough: also require audible speech behind any short transcript.
+        speech_seconds = _speech_seconds(y, sr)
+        is_silent = (
+            word_count < 3
+            or _is_silence_hallucination(transcript)
+            or (speech_seconds < MIN_SPEECH_SECONDS and word_count < 8)
+        )
+        if is_silent and word_count:
+            print(f"      [audio] Treating as silent: {speech_seconds:.1f}s of speech, transcript {transcript!r}")
 
         wpm = (word_count / duration * 60) if duration > 0 else 0
 
@@ -160,6 +195,7 @@ def compute_audio_signals(audio_path: str) -> dict:
             "confidence_language_score": round(confidence_language_score, 1),
             "hedging_count": hedging_count,
             "word_count": word_count,
+            "speech_seconds": round(speech_seconds, 1),
             "is_silent": is_silent,
         }
 

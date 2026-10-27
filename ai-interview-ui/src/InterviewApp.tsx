@@ -1,14 +1,37 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { SetupScreen } from './components/interview/SetupScreen'
 import { CameraCheckScreen } from './components/interview/CameraCheckScreen'
 import { PreInterviewScreen } from './components/interview/PreInterviewScreen'
 import { InterviewScreen } from './components/interview/InterviewScreen'
 import { ReportScreen } from './components/interview/ReportScreen'
-import type { StartResponse, ReportResponse } from './lib/interview-api'
+import { endInterview, getInterviewState, getReport, type StartResponse, type ReportResponse } from './lib/interview-api'
+import { ApiError } from './lib/api'
 
 type Screen = 'setup' | 'camera-check' | 'pre-interview' | 'interview' | 'report'
 
 const SESSION_KEY = 'tejaskrit_session'
+// Finished reports are kept server-side for 24h; this remembers the latest one.
+const LAST_REPORT_KEY = 'tejaskrit_last_report'
+
+interface LastReport {
+  session_id: string
+  candidateName: string
+  jobTitle: string
+  expires_at: string
+}
+
+function readLastReport(): LastReport | null {
+  try {
+    const raw = localStorage.getItem(LAST_REPORT_KEY)
+    if (!raw) return null
+    const saved: LastReport = JSON.parse(raw)
+    if (new Date(saved.expires_at).getTime() > Date.now()) return saved
+    localStorage.removeItem(LAST_REPORT_KEY)
+  } catch {
+    /* storage unavailable or corrupt */
+  }
+  return null
+}
 
 export interface SavedSession {
   session_id: string
@@ -37,17 +60,18 @@ export function InterviewApp() {
   const [ctx, setCtx] = useState<{ candidateName: string; jobTitle: string }>({ candidateName: '', jobTitle: '' })
   const [report, setReport] = useState<ReportResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [savedSession, setSavedSession] = useState<SavedSession | null>(null)
-  const [endedEarly, setEndedEarly] = useState(false)
-
-  useEffect(() => {
+  const [savedSession, setSavedSession] = useState<SavedSession | null>(() => {
     try {
       const raw = localStorage.getItem(SESSION_KEY)
-      if (raw) setSavedSession(JSON.parse(raw))
+      return raw ? JSON.parse(raw) : null
     } catch {
       localStorage.removeItem(SESSION_KEY)
+      return null
     }
-  }, [])
+  })
+  const [endedEarly, setEndedEarly] = useState(false)
+  const [lastReport, setLastReport] = useState<LastReport | null>(readLastReport)
+  const [opening, setOpening] = useState(false)
 
   const handleStarted = (data: StartResponse, context: { candidateName: string; jobTitle: string }) => {
     setStartData(data)
@@ -57,13 +81,62 @@ export function InterviewApp() {
     setScreen('camera-check')
   }
 
-  const handleResume = (saved: SavedSession) => {
+  const showReport = (r: ReportResponse) => {
+    setCtx({ candidateName: r.candidate_name, jobTitle: r.job_title })
+    setReport(r)
+    setEndedEarly(false)
+    setScreen('report')
+  }
+
+  const openLastReport = async () => {
+    if (!lastReport) return
+    setOpening(true)
+    try {
+      showReport(await getReport(lastReport.session_id))
+    } catch {
+      localStorage.removeItem(LAST_REPORT_KEY)
+      setLastReport(null)
+      setError('That report has expired.')
+    } finally {
+      setOpening(false)
+    }
+  }
+
+  const handleResume = async (saved: SavedSession) => {
+    setOpening(true)
+    setError(null)
+    // Ask the server where this interview really is — it may have finished
+    // (report ready) or moved past the question saved in this browser.
+    let state: Awaited<ReturnType<typeof getInterviewState>> | null = null
+    try {
+      state = await getInterviewState(saved.session_id)
+      if (state.status === 'complete') {
+        showReport(await endInterview(saved.session_id))
+        localStorage.removeItem(SESSION_KEY)
+        setSavedSession(null)
+        return
+      }
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) {
+        localStorage.removeItem(SESSION_KEY)
+        setSavedSession(null)
+        try {
+          showReport(await getReport(saved.session_id))
+        } catch {
+          setError('That interview is no longer available.')
+        }
+        return
+      }
+      // Network trouble: fall back to what this browser saved.
+    } finally {
+      setOpening(false)
+    }
     const reconstructed: StartResponse = {
       session_id: saved.session_id,
       candidate_name: saved.candidateName,
-      question_id: saved.question_id,
-      question: saved.question,
-      category: saved.category,
+      question_id: state?.question_id ?? saved.question_id,
+      question: state?.question ?? saved.question,
+      category: state?.category ?? saved.category,
       estimated_duration_minutes: saved.total_questions * 3,
       total_questions: saved.total_questions,
     }
@@ -82,6 +155,13 @@ export function InterviewApp() {
   const handleComplete = (r: ReportResponse, early?: boolean) => {
     document.exitFullscreen?.().catch(() => { })
     localStorage.removeItem(SESSION_KEY)
+    if (r.session_id && r.report_expires_at) {
+      const pointer: LastReport = {
+        session_id: r.session_id, candidateName: r.candidate_name, jobTitle: r.job_title, expires_at: r.report_expires_at,
+      }
+      try { localStorage.setItem(LAST_REPORT_KEY, JSON.stringify(pointer)) } catch { /* storage unavailable */ }
+      setLastReport(pointer)
+    }
     setReport(r)
     setEndedEarly(!!early)
     setScreen('report')
@@ -109,9 +189,10 @@ export function InterviewApp() {
           <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={() => handleResume(savedSession)}
-              className="px-3 py-1 rounded-md bg-primary-foreground text-primary font-medium text-xs hover:bg-primary-foreground/90 transition"
+              disabled={opening}
+              className="px-3 py-1 rounded-md bg-primary-foreground text-primary font-medium text-xs hover:bg-primary-foreground/90 disabled:opacity-60 transition"
             >
-              Resume
+              {opening ? 'Checking…' : 'Resume'}
             </button>
             <button
               onClick={handleDismissSaved}
@@ -120,6 +201,29 @@ export function InterviewApp() {
               Dismiss
             </button>
           </div>
+        </div>
+      )}
+
+      {screen === 'setup' && !savedSession && lastReport && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-xl bg-surface/95 backdrop-blur border border-border rounded-2xl shadow-2xl px-4 py-3 flex items-center gap-3 text-sm">
+          <span className="flex-1 min-w-0 truncate">
+            Your report for <strong>{lastReport.jobTitle}</strong> is still available
+            <span className="text-muted-foreground"> · until {new Date(lastReport.expires_at).toLocaleString([], { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' })}</span>
+          </span>
+          <button
+            onClick={openLastReport}
+            disabled={opening}
+            className="shrink-0 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-60 transition"
+          >
+            {opening ? 'Opening…' : 'Open report'}
+          </button>
+          <button
+            onClick={() => { localStorage.removeItem(LAST_REPORT_KEY); setLastReport(null) }}
+            aria-label="Dismiss"
+            className="shrink-0 text-muted-foreground hover:text-foreground text-xs px-1"
+          >
+            ✕
+          </button>
         </div>
       )}
 

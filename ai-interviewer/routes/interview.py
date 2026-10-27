@@ -4,10 +4,12 @@ import subprocess
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 import numpy as np
 
@@ -29,8 +31,11 @@ def _sanitize(obj):
 from models.schemas import StartInterviewRequest, StartInterviewResponse
 from core import llm, llm_client, session_store, scoring_engine
 from core.ai_settings import load_ai_config
-from core.config import ANALYSIS_WORKERS, ANSWER_JOB_TIMEOUT_SECONDS, MAX_UPLOAD_MB
-from core.db import User, get_db
+from core.config import (
+    ANALYSIS_WORKERS, ANSWER_JOB_TIMEOUT_SECONDS, MAX_ANSWER_SECONDS, MAX_INTERVIEWS_PER_DAY,
+    MAX_UPLOAD_MB, REPORT_RETENTION_HOURS,
+)
+from core.db import InterviewReport, InterviewSession, UsageEvent, User, as_utc, get_db, utcnow
 from core.deps import current_user
 from analysis import audio_analyzer, video_analyzer
 from analysis.errors import AnalysisError
@@ -71,6 +76,29 @@ def _job_active(session: dict) -> bool:
     if not job or job.get("state") != "processing":
         return False
     return time.time() - job.get("started_at", 0) < ANSWER_JOB_TIMEOUT_SECONDS
+
+
+def _check_daily_quota(db: Session, user: User) -> None:
+    since = utcnow() - timedelta(hours=24)
+    started = db.execute(
+        select(func.count()).select_from(UsageEvent)
+        .where(UsageEvent.user_id == user.id, UsageEvent.kind == "interview_start", UsageEvent.created_at > since)
+    ).scalar_one()
+    if started >= MAX_INTERVIEWS_PER_DAY:
+        raise HTTPException(status_code=429, detail={
+            "code": "daily_limit",
+            "message": f"You've started {started} interviews in the last 24 hours — the limit is "
+                       f"{MAX_INTERVIEWS_PER_DAY}. Please try again later.",
+        })
+
+
+def _other_answer_in_progress(db: Session, user: User, session_id: str) -> bool:
+    """True if another of this user's interviews is currently analysing an answer.
+    Video analysis is CPU-heavy, so each user gets one at a time."""
+    rows = db.execute(
+        select(InterviewSession.data).where(InterviewSession.user_id == user.id, InterviewSession.id != session_id)
+    ).scalars()
+    return any(_job_active(data) for data in rows)
 
 
 def _require_current_question(session: dict, question_id: int) -> dict:
@@ -174,6 +202,7 @@ def start_interview(
     db: Session = Depends(get_db),
 ):
     ai_config = load_ai_config(db, user.id)
+    _check_daily_quota(db, user)
     rubric_dict = request.rubric.model_dump()
     total = sum(rubric_dict.values())
     if total != 100:
@@ -230,6 +259,9 @@ def start_interview(
     # Topic coverage is only incremented once an answer is actually submitted.
     session_store.ask_question(session, first_question)
     session_store.save(session)
+    # Only successful starts count toward the daily quota.
+    db.add(UsageEvent(user_id=user.id, kind="interview_start"))
+    db.commit()
 
     return StartInterviewResponse(
         session_id=session["session_id"],
@@ -278,10 +310,23 @@ def submit_answer(
     """Accept the recording and start analysing it in the background.
     Poll GET /interview/{session_id}/answer-status?question_id=… for the result."""
     ai_config = load_ai_config(db, user.id)
-    # Cheap check before spending time on the upload.
+    # Cheap checks before spending time on the upload.
     _require_current_question(_owned_session(session_id, user), question_id)
+    if _other_answer_in_progress(db, user, session_id):
+        raise HTTPException(status_code=429, detail={
+            "code": "answer_in_progress",
+            "message": "Another of your interviews is still analysing an answer. Please wait for it to finish.",
+        })
 
     tmp_path = _save_upload(video)
+    duration = _probe_duration(tmp_path)
+    if duration is not None and duration > MAX_ANSWER_SECONDS + 5:
+        _unlink(tmp_path)
+        raise HTTPException(status_code=413, detail={
+            "code": "recording_too_long",
+            "message": f"That recording is {duration / 60:.1f} minutes long — answers are limited to "
+                       f"{MAX_ANSWER_SECONDS // 60} minutes.",
+        })
     try:
         # Re-check and claim atomically so a double-submit can't analyse twice.
         with session_store.lock(session_id):
@@ -458,7 +503,13 @@ def end_interview(
     db: Session = Depends(get_db),
 ):
     with session_store.lock(session_id):
-        session = _owned_session(session_id, user)
+        session = session_store.load(session_id, user.id)
+        if session is None:
+            # Already ended — e.g. a retry after the first response was lost.
+            stored = _stored_report(db, session_id, user)
+            if stored is not None:
+                return JSONResponse(stored)
+            raise HTTPException(status_code=404, detail="Session not found")
         if _job_active(session):
             raise _conflict("answer_processing", "Your last answer is still being analysed — try again in a moment.")
 
@@ -488,9 +539,31 @@ def end_interview(
             session_store.save(session)
 
         with llm.use_config(load_ai_config(db, user.id, need_stt=False)):
-            report = scoring_engine.generate_final_report(session)
+            report = _sanitize(scoring_engine.generate_final_report(session))
+        report["report_expires_at"] = (utcnow() + timedelta(hours=REPORT_RETENTION_HOURS)).isoformat()
+        db.merge(InterviewReport(
+            id=session_id, user_id=user.id, data=report,
+            expires_at=utcnow() + timedelta(hours=REPORT_RETENTION_HOURS),
+        ))
+        db.commit()
         session_store.delete_session(session_id)
-    return JSONResponse(_sanitize(report))
+    return JSONResponse(report)
+
+
+def _stored_report(db: Session, session_id: str, user: User) -> dict | None:
+    row = db.get(InterviewReport, session_id)
+    if row is None or row.user_id != user.id or as_utc(row.expires_at) < utcnow():
+        return None
+    return row.data
+
+
+@router.get("/interview/{session_id}/report")
+def get_report(session_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Re-open a finished report (kept for REPORT_RETENTION_HOURS)."""
+    report = _stored_report(db, session_id, user)
+    if report is None:
+        raise HTTPException(status_code=404, detail="This report has expired or doesn't exist.")
+    return JSONResponse(report)
 
 
 def _save_upload(upload: UploadFile) -> str:
@@ -511,6 +584,19 @@ def _save_upload(upload: UploadFile) -> str:
     return tmp_path
 
 
+def _probe_duration(path: str) -> float | None:
+    """Container duration in seconds, or None when unknown. Browser MediaRecorder
+    WebM often has no duration header, so ffmpeg's -t limit is the real backstop."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=20,
+        )
+        return float(result.stdout.strip())
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
 def _unlink(path: str | None) -> None:
     try:
         if path and os.path.exists(path):
@@ -527,7 +613,7 @@ def _extract_audio(video_path: str) -> str:
     audio_path = base + "_audio.wav"
     result = subprocess.run(
         [
-            "ffmpeg", "-y", "-i", video_path,
+            "ffmpeg", "-y", "-i", video_path, "-t", str(MAX_ANSWER_SECONDS),
             "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
             audio_path, "-loglevel", "error"
         ],
@@ -545,7 +631,7 @@ def _compress_video(input_path: str) -> str:
     compressed_path = base + "_compressed.mp4"
     result = subprocess.run(
         [
-            "ffmpeg", "-y", "-i", input_path,
+            "ffmpeg", "-y", "-i", input_path, "-t", str(MAX_ANSWER_SECONDS),
             "-vf", "scale=640:480", "-crf", "28", "-preset", "fast",
             "-c:a", "aac", "-b:a", "64k",
             compressed_path, "-loglevel", "error"

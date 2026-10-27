@@ -246,7 +246,7 @@ const FEATURES = [
 const FAQ = [
   { q: 'Why do I need my own API key?', a: 'You choose the model that evaluates you — and you pay your provider directly at their rates, with no markup. Keys are encrypted before they touch our database and are never sent back to your browser.' },
   { q: 'Which models can I use?', a: 'Any chat model your Anthropic, OpenAI, Groq, Gemini or OpenRouter key can access, for evaluation. Transcription can use Groq or OpenAI Whisper-family models, or an audio-capable Gemini / OpenRouter model. You can pick a separate cheaper model for quick routing decisions.' },
-  { q: 'Do you store my recordings?', a: 'No. Each answer is processed in a temporary file that is deleted as soon as it has been analysed. The interview itself is deleted when your report is generated, and abandoned interviews are purged after 48 hours.' },
+  { q: 'Do you store my recordings?', a: 'No. Each answer is processed in a temporary file that is deleted as soon as it has been analysed. Your finished report is kept for 24 hours so you can reopen it, then deleted; abandoned interviews are purged after 48 hours.' },
   { q: 'Is anything shared with employers?', a: 'No. This is a private practice tool. Your transcript is sent only to the AI provider you selected, under your own key.' },
   { q: 'How do I sign in?', a: 'With your email — we send a one-time 6-digit code. No passwords to remember or leak.' },
 ]

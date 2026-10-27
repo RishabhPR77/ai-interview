@@ -3,7 +3,8 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { ArrowLeft, ArrowRight, Check, Loader2, Mail, ShieldCheck } from 'lucide-react'
 import { Logo } from '@/components/brand/Logo'
 import { ApiError } from '@/lib/api'
-import { getAiSettings, requestOtp, updateProfile, verifyOtp } from '@/lib/account-api'
+import { getAiSettings, getAuthConfig, requestOtp, updateProfile, verifyOtp } from '@/lib/account-api'
+import { Turnstile } from '@/components/Turnstile'
 import { useAuth } from '@/lib/auth'
 import { navigate } from '@/lib/router'
 
@@ -93,6 +94,15 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(null)
   const [cooldown, setCooldown] = useState(0)
   const [codeKey, setCodeKey] = useState(0)
+  // Bot protection: only active when the server has Turnstile configured.
+  const [siteKey, setSiteKey] = useState<string | null>(null)
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null)
+  const [captchaKey, setCaptchaKey] = useState(0)
+  const needsCaptcha = !!siteKey && !captchaToken
+
+  useEffect(() => {
+    getAuthConfig().then(c => setSiteKey(c.turnstile_site_key)).catch(() => {})
+  }, [])
 
   // Already signed in (e.g. opened /login in a second tab)
   useEffect(() => {
@@ -110,7 +120,7 @@ export function LoginPage() {
     setError(null)
     setBusy(true)
     try {
-      const res = await requestOtp(email.trim())
+      const res = await requestOtp(email.trim(), captchaToken)
       setCooldown(res.resend_after_seconds)
       setCode('')
       setCodeKey(k => k + 1)
@@ -118,6 +128,9 @@ export function LoginPage() {
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Something went wrong. Please try again.')
     } finally {
+      // Turnstile tokens are single-use: get a fresh one for the next request.
+      setCaptchaToken(null)
+      setCaptchaKey(k => k + 1)
       setBusy(false)
     }
   }
@@ -217,10 +230,15 @@ export function LoginPage() {
                       className={`${inputCls} pl-11`}
                     />
                   </div>
+                  {siteKey && (
+                    <div className="mt-5">
+                      <Turnstile key={captchaKey} siteKey={siteKey} onToken={setCaptchaToken} onError={setError} />
+                    </div>
+                  )}
                   {error && <p role="alert" className="mt-3 text-sm text-destructive">{error}</p>}
                   <button
                     type="submit"
-                    disabled={busy || !email.trim()}
+                    disabled={busy || !email.trim() || needsCaptcha}
                     className="mt-6 w-full inline-flex items-center justify-center gap-2 bg-primary text-primary-foreground font-medium px-6 py-3.5 rounded-xl glow-primary hover:bg-primary/90 disabled:opacity-60 disabled:cursor-not-allowed transition"
                   >
                     {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <>Send code <ArrowRight className="w-4 h-4" /></>}
@@ -256,7 +274,12 @@ export function LoginPage() {
                     {cooldown > 0 ? (
                       <span className="tabular-nums">resend in {cooldown}s</span>
                     ) : (
-                      <button onClick={() => sendCode()} disabled={busy} className="text-primary hover:underline">resend the code</button>
+                      <button onClick={() => sendCode()} disabled={busy || needsCaptcha} className="text-primary hover:underline disabled:opacity-50 disabled:no-underline">resend the code</button>
+                    )}
+                    {siteKey && cooldown <= 0 && (
+                      <div className="mt-4">
+                        <Turnstile key={captchaKey} siteKey={siteKey} onToken={setCaptchaToken} onError={setError} />
+                      </div>
                     )}
                   </div>
                 </motion.div>

@@ -362,7 +362,7 @@ All routes are under `/api/v1`. State-changing requests must send `X-Requested-W
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| POST | `/auth/request-otp` | `{email}` | `{ok, expires_in_seconds, resend_after_seconds}` |
+| POST | `/auth/request-otp` | `{email, turnstile_token?}` | `{ok, expires_in_seconds, resend_after_seconds}` |
 | POST | `/auth/verify-otp` | `{email, code}` | `{user, is_new}` + sets session cookie |
 | POST | `/auth/logout` | — | revokes the session |
 | GET / PATCH | `/auth/me` | PATCH: `{name}` | `{user}` |
@@ -376,7 +376,9 @@ All routes are under `/api/v1`. State-changing requests must send `X-Requested-W
 | GET | `/interview/{session_id}/answer-status?question_id=` | — | `processing`, `error` (+ `detail`, re-submit allowed), or the next question / follow-up / `complete` |
 | GET | `/interview/{session_id}/state` | — | current question + status (used to resync) |
 | POST | `/interview/{session_id}/skip` | `{question_id}` | next question or complete |
-| POST | `/interview/end` | form: `session_id` | final report (session is then deleted) |
+| POST | `/interview/end` | form: `session_id` | final report; the live session is deleted and the report kept for `REPORT_RETENTION_HOURS` (retrying returns the stored report) |
+| GET | `/interview/{session_id}/report` | — | a stored report, until it expires |
+| GET | `/auth/config` | — | `{turnstile_site_key}` for the sign-in page |
 | GET | `/health` | — | `{status, ffmpeg}` |
 
 ---
@@ -393,8 +395,12 @@ See [`ai-interviewer/.env.example`](ai-interviewer/.env.example) for the full li
 | `ENCRYPTION_KEY` | Encrypts users' provider keys — back it up |
 | `DATABASE_URL` | Postgres URL in production (SQLite default) |
 | `BREVO_API_KEY`, `EMAIL_FROM_ADDRESS`, `EMAIL_FROM_NAME` | Sign-in emails |
+| `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | Cloudflare Turnstile bot check on sign-in (both or neither) |
+| `MAX_INTERVIEWS_PER_DAY`, `MAX_ANSWER_SECONDS` | Per-user daily interview quota; longest answer analysed |
+| `REPORT_RETENTION_HOURS` | How long a finished report can be reopened (default 24) |
+| `ANALYSIS_WORKERS` | Parallel answer analyses per server |
 | `COOKIE_SAMESITE`, `CORS_ORIGINS` | Only for split frontend/backend hosting |
-| `MAX_UPLOAD_MB`, `LOCAL_WHISPER_FALLBACK` | Upload cap; optional offline Whisper (`requirements-local-whisper.txt`) |
+| `MAX_UPLOAD_MB`, `LOCAL_WHISPER_FALLBACK` | Upload cap (default 100); optional offline Whisper (`requirements-local-whisper.txt`) |
 
 ---
 

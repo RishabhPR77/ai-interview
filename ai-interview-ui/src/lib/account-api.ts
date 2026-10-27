@@ -8,9 +8,11 @@ export interface User {
   created_at: string
 }
 
-export const requestOtp = (email: string) =>
+export const getAuthConfig = () => api<{ turnstile_site_key: string | null }>('/auth/config')
+
+export const requestOtp = (email: string, turnstileToken?: string | null) =>
   api<{ ok: true; expires_in_seconds: number; resend_after_seconds: number }>('/auth/request-otp', {
-    method: 'POST', json: { email },
+    method: 'POST', json: { email, turnstile_token: turnstileToken ?? undefined },
   })
 
 export const verifyOtp = (email: string, code: string) =>

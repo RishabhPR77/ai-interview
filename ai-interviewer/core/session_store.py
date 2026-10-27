@@ -21,7 +21,7 @@ from typing import Iterator, Optional
 
 from sqlalchemy import delete
 
-from core.db import InterviewSession, SessionLocal, utcnow
+from core.db import InterviewReport, InterviewSession, SessionLocal, UsageEvent, utcnow
 
 _locks: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
 _locks_guard = threading.Lock()
@@ -148,9 +148,12 @@ def delete_session(session_id: str) -> None:
 
 
 def purge_stale(max_age_hours: int = 48) -> int:
-    """Drop abandoned interviews (no activity for max_age_hours)."""
-    cutoff = utcnow() - timedelta(hours=max_age_hours)
+    """Drop abandoned interviews (no activity for max_age_hours), expired reports
+    and old usage events. Returns the number of interviews removed."""
+    now = utcnow()
     with SessionLocal() as db:
-        result = db.execute(delete(InterviewSession).where(InterviewSession.updated_at < cutoff))
+        result = db.execute(delete(InterviewSession).where(InterviewSession.updated_at < now - timedelta(hours=max_age_hours)))
+        db.execute(delete(InterviewReport).where(InterviewReport.expires_at < now))
+        db.execute(delete(UsageEvent).where(UsageEvent.created_at < now - timedelta(days=7)))
         db.commit()
     return result.rowcount or 0
