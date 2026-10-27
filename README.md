@@ -20,11 +20,14 @@ An end-to-end **AI interview practice platform**. A candidate pastes a **job des
 8. [Scoring & report generation](#scoring--report-generation)
 9. [Tech stack](#tech-stack)
 10. [Repository structure](#repository-structure)
-11. [Setup — Backend](#setup--backend)
-12. [Setup — Frontend](#setup--frontend)
-13. [API reference](#api-reference)
-14. [Environment variables](#environment-variables)
-15. [Troubleshooting](#troubleshooting)
+11. [Prerequisites](#prerequisites)
+12. [Setup — Backend](#setup--backend)
+13. [Setup — Frontend](#setup--frontend)
+14. [First run](#first-run)
+15. [Production & deployment](#production--deployment)
+16. [API reference](#api-reference)
+17. [Environment variables](#environment-variables)
+18. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -276,7 +279,7 @@ Beyond that, scoring is intentionally conservative: **untested categories count 
 - **Bring-your-own-key LLMs** — Anthropic (official `anthropic` SDK), OpenAI, Groq, Google Gemini and OpenRouter (via the `openai` SDK's compatible endpoints). Users choose separate **evaluation**, optional **fast/routing** and **transcription** models.
 - Speech-to-text — Groq / OpenAI Whisper-family (`whisper-large-v3-turbo`, `gpt-transcribe`, …) or an audio-capable Gemini / OpenRouter chat model
 - Passwordless email OTP sign-in via **Brevo**; httpOnly server-side sessions; provider keys encrypted at rest (Fernet)
-- MediaPipe FaceLandmarker · OpenCV · NumPy · librosa · sentence-transformers (optional) · ffmpeg (binary, `PATH`)
+- MediaPipe FaceLandmarker + PoseLandmarker · OpenCV · NumPy · librosa · sentence-transformers (optional) · ffmpeg (binary, `PATH`)
 
 **Frontend** (`ai-interview-ui/`)
 - React 19 + TypeScript + Vite · Tailwind CSS v4 (dark UI) · framer-motion
@@ -296,14 +299,14 @@ Beyond that, scoring is intentionally conservative: **untested categories count 
 | `routes/account.py` | `/account/ai` (status + model choices), `/account/keys/{provider}` (verify → encrypt → store / delete), `/account/models/{provider}` (live model list), `DELETE /account`. |
 | `routes/interview.py` | `/start`, `/detect-seniority`, `/answer`, `/skip`, `/end` — all require sign-in and session ownership; run in FastAPI's threadpool. |
 | `core/config.py` | Environment config; refuses to start in `ENV=production` without secrets. |
-| `core/db.py` | SQLAlchemy models: users, OTP codes, auth sessions, provider keys, user settings, interview sessions. |
+| `core/db.py` | SQLAlchemy models: users, OTP codes, auth sessions, provider keys, user settings, interview sessions, usage events (daily quota), finished reports. |
 | `core/llm.py` | Provider registry, JSON chat calls, transcription, error translation, model discovery/validation. |
 | `core/llm_client.py` | Interview prompts → LLM calls with retry/truncation handling (question generation + backfill, scoring, follow-ups, routing, summary, seniority). |
 | `core/ai_settings.py` | Loads a user's keys + model choices into an `AIConfig` for the request. |
 | `core/session_store.py` | Interview state, write-through persisted to the DB (survives restarts). |
 | `core/email.py` · `core/security.py` · `core/deps.py` | Brevo email, hashing/encryption helpers, `current_user` dependency. |
 | `analysis/audio_analyzer.py` | Transcription via the user's STT model, WPM, pauses, fillers, hedging, confidence-language score. |
-| `analysis/video_analyzer.py` | MediaPipe frame analysis: eye contact, expressions, posture, nervousness, drowsiness, engagement. |
+| `analysis/video_analyzer.py` | MediaPipe face + pose analysis: eye contact, expressions, posture, gestures, nervousness, drowsiness, engagement. |
 | `prompts/templates.py` | All LLM prompt templates. |
 | `models/schemas.py` | Pydantic request/response models. |
 
@@ -320,6 +323,23 @@ Beyond that, scoring is intentionally conservative: **untested categories count 
 
 ---
 
+## Prerequisites
+
+| Tool | Version | Install |
+|---|---|---|
+| Git | any | https://git-scm.com |
+| Python | 3.12 | https://www.python.org/downloads/ (Windows: tick "Add python.exe to PATH") |
+| Node.js | 22+ | https://nodejs.org |
+| ffmpeg | any recent | Windows: `winget install Gyan.FFmpeg` · macOS: `brew install ffmpeg` · Ubuntu/Debian: `sudo apt install ffmpeg` |
+| An AI provider key | — | At least one of Groq, OpenAI, Gemini, OpenRouter or Anthropic. All but Anthropic can also transcribe audio. Groq and Gemini have free tiers. |
+
+Check with `python --version`, `node --version` and `ffmpeg -version` in a new terminal.
+
+```bash
+git clone https://github.com/RishabhPR77/ai-interview.git
+cd ai-interview
+```
+
 ## Setup — Backend
 
 ```bash
@@ -327,12 +347,12 @@ cd ai-interviewer
 python -m venv venv
 venv\Scripts\activate            # Windows; use `source venv/bin/activate` on Unix
 pip install -r requirements.txt
-cp .env.example .env             # all values optional in development
+cp .env.example .env             # (cmd.exe: copy) — all values optional in development
 uvicorn main:app --port 8000 --reload
 ```
 
 - In development, `SECRET_KEY` / `ENCRYPTION_KEY` are generated under `ai-interviewer/data/`, and without `BREVO_API_KEY` the **sign-in code is printed in the server console**.
-- **ffmpeg is required** on `PATH`. The MediaPipe face model (~30MB) downloads to `~/.cache/mediapipe` on first use.
+- **ffmpeg is required** on `PATH`. The MediaPipe face and pose models (~10MB) download to `~/.cache/mediapipe` on first use.
 - No server-side LLM key is needed — each user adds their own in **Settings**.
 
 ## Setup — Frontend
@@ -345,23 +365,60 @@ npm run dev        # → http://localhost:5173 (proxies /api to 127.0.0.1:8000)
 
 Leave `VITE_API_URL` unset in development: the Vite proxy keeps the API same-origin so the session cookie works.
 
-## Production (single service)
+## First run
+
+Keep both terminals (backend on :8000, frontend on :5173) running, then:
+
+1. Open http://localhost:5173 → **Get started**.
+2. Enter any email. Without `BREVO_API_KEY` no email is sent — the 6-digit code is printed in the **backend terminal** (`[dev] OTP for you@example.com: 123456`).
+3. Enter the code and your name. You land in **Settings**.
+4. Paste a provider key and click **Verify & save** — it's checked, encrypted and sensible default models are picked. Anthropic can't transcribe audio, so with an Anthropic key also add a Groq, OpenAI, Gemini or OpenRouter key for the transcription model.
+5. Click **Start practicing** (or *Practice interview* in the account menu), paste a job description and resume, allow camera + microphone, and answer. The report appears when you finish.
+
+## Production & deployment
+
+The repo-root `Dockerfile` builds one image that serves the API and the built web app from the same origin (no CORS, cookie stays same-site):
 
 ```bash
 docker build -t tejaskrit .
 docker run -p 8000:8000 --env-file ai-interviewer/.env -v tk-data:/data tejaskrit
 ```
 
-The image builds the frontend, installs ffmpeg + Python deps, bakes in the face model and serves everything from one origin. Required env in production: `ENV=production`, `APP_URL`, `SECRET_KEY`, `ENCRYPTION_KEY`, `BREVO_API_KEY`, `EMAIL_FROM_ADDRESS` (a Brevo-verified sender), and ideally `DATABASE_URL` (Postgres).
+It installs ffmpeg and the Python deps, bakes in the MediaPipe models and runs as a non-root user (UID 1000). It reads `PORT` if the host sets one (default 8000) and exposes `/health` for health checks.
 
-**Free hosting on Hugging Face Spaces** (Docker Space, free CPU tier) with a free Neon Postgres: add the variables above as Space secrets (`APP_URL=https://<user>-<space>.hf.space`, `DATABASE_URL` = Neon connection string), then deploy the committed code with
+**Environment** — with `ENV=production` the server refuses to start until all of these except `DATABASE_URL` are set:
 
-```bash
-pip install -U huggingface_hub && hf auth login
-python deploy/hf_space.py <user>/<space>
-```
+| Variable | Value |
+|---|---|
+| `ENV` | `production` |
+| `APP_URL` | the public `https://` URL users open |
+| `SECRET_KEY`, `ENCRYPTION_KEY` | two different random values: `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
+| `BREVO_API_KEY` | from Brevo → SMTP & API → API Keys |
+| `EMAIL_FROM_ADDRESS` | a sender verified in Brevo |
+| `DATABASE_URL` | a Postgres URL (`postgres://` / `postgresql://` both work). Without it, SQLite under `/data` — mount a volume. |
 
-The script creates a public Docker Space if it doesn't exist. Open the app at the `*.hf.space` URL — the huggingface.co Space page embeds it in a frame, where the sign-in cookie can't be set. Free Spaces sleep after ~48h without visits.
+> **Back up `ENCRYPTION_KEY`.** It encrypts users' saved provider keys; if it changes, every stored key becomes unreadable and users must re-enter them.
+
+**What the host must provide**
+
+- **≥ 1 GB RAM** — answer analysis (ffmpeg + MediaPipe) peaks around 550 MB. 512 MB free tiers are too small.
+- **Exactly one instance**, always on — interview locks, background answer jobs and the sign-in rate limiter live in the process. Don't enable autoscaling or scale-to-zero.
+- **Postgres** (managed or a container next to the app) and **HTTPS** (the session cookie is `Secure` when `APP_URL` is `https`).
+
+**Where to host it**
+
+- **Railway / Render / Fly.io / DigitalOcean App Platform** — deploy the GitHub repo (the root `Dockerfile` is detected), add the host's Postgres, set the variables above, generate a public domain, set the health check path to `/health`, keep one replica. On Railway, use `DATABASE_URL=${{Postgres.DATABASE_URL}}` and `APP_URL=https://${{RAILWAY_PUBLIC_DOMAIN}}`; don't set `PORT` yourself.
+- **Any VPS** (Hetzner, DigitalOcean, Oracle Cloud's free Arm VM, …) — install Docker, run the image next to a `postgres` container, and put a reverse proxy with automatic HTTPS (e.g. Caddy) in front.
+- **Hugging Face Spaces** — Docker Spaces need a paid PRO plan since mid-2026. With one: create a *public* Docker Space, add the variables as Space secrets (`APP_URL=https://<user>-<space>.hf.space`, e.g. a Neon Postgres URL for `DATABASE_URL`), then deploy the committed code:
+
+  ```bash
+  pip install -U huggingface_hub && hf auth login
+  python deploy/hf_space.py <user>/<space>
+  ```
+
+  Open the app at the `*.hf.space` URL — the huggingface.co Space page embeds it in a frame, where the sign-in cookie can't be set.
+
+**After deploying:** sign in with a real email, add a provider key, and run one short interview with the camera on. Optionally add Cloudflare Turnstile (`TURNSTILE_SITE_KEY` + `TURNSTILE_SECRET_KEY`, widget hostname = your domain) to protect sign-in from bots.
 
 ---
 
@@ -420,4 +477,6 @@ See [`ai-interviewer/.env.example`](ai-interviewer/.env.example) for the full li
 - **Didn't get the sign-in email** — in development the code is in the backend console; in production check the Brevo sender is verified and look at Brevo's transactional logs.
 - **401 loops in development** — don't set `VITE_API_URL`; use the Vite proxy so the cookie is same-origin.
 - **Audio not transcribed** — check ffmpeg is on `PATH` and the transcription model in Settings.
-- **No faces detected in video** — camera too dark or face off-frame; the analyzer uses neutral defaults.
+- **No faces detected in video** — camera too dark or face off-frame; that answer is scored on content and audio only and the report shows video metrics as unavailable.
+- **`ffmpeg` not found after installing it** — open a new terminal so the updated `PATH` is picked up; `/health` reports `"ffmpeg": true` when the server can see it.
+- **Server won't start with `ENV=production`** — the error names the missing variable (see [Production & deployment](#production--deployment)).
