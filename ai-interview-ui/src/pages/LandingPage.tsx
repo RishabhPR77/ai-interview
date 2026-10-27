@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import {
-  Activity, ArrowRight, AudioLines, Brain, Check, ChevronDown, Eye, FileDown, GitBranch,
-  KeyRound, Lock, Mic, ScanFace, ShieldCheck, Sparkles, Target, Timer, Video, Waves,
+  Activity, ArrowRight, AudioLines, Brain, Check, ChevronDown, Eye, GitBranch,
+  KeyRound, Lock, Mic, ScanFace, ShieldCheck, Sparkles, Timer, Waves,
 } from 'lucide-react'
 import { Logo } from '@/components/brand/Logo'
+import { ProductTour } from '@/components/landing/ProductTour'
 import { UserMenu } from '@/components/AppHeader'
 import { useAuth } from '@/lib/auth'
 import { Link } from '@/lib/router'
@@ -228,12 +229,6 @@ function HeroVisual() {
 
 const PROVIDERS = ['Anthropic', 'OpenAI', 'Groq', 'Google Gemini', 'OpenRouter']
 
-const STEPS = [
-  { icon: Target, title: 'Paste the role', desc: 'Drop in the job description and your resume. We detect seniority and interview type, then build a question bank weighted by your rubric.' },
-  { icon: Video, title: 'Answer on camera', desc: 'Respond out loud like the real thing. Weak answers trigger an in-topic follow-up; the next question adapts to what you have not covered yet.' },
-  { icon: FileDown, title: 'Get the debrief', desc: 'A scored report across content, delivery and presence — strengths, gaps, red flags and a per-question breakdown you can export as PDF.' },
-]
-
 const FEATURES = [
   { icon: Brain, title: 'Questions written for this job', desc: 'Every question is generated from the JD and your resume — not pulled from a generic bank.', span: 'lg:col-span-2' },
   { icon: GitBranch, title: 'Adaptive follow-ups', desc: 'Vague answer? Expect a probing follow-up, just like a sharp interviewer.', span: '' },
@@ -387,21 +382,15 @@ export function LandingPage() {
         <div className="max-w-2xl">
           <Eyebrow>How it works</Eyebrow>
           <motion.h2 variants={fadeUp} className="font-serif text-[clamp(2rem,4vw,3.2rem)] leading-[1.08]">
-            Three steps from job post to honest feedback.
+            From sign-in to your report in five steps.
           </motion.h2>
+          <motion.p variants={fadeUp} className="mt-4 text-muted-foreground leading-relaxed">
+            Watch a full practice run — this is exactly what you'll click.
+          </motion.p>
         </div>
-        <div className="mt-14 grid md:grid-cols-3 gap-5">
-          {STEPS.map((s, i) => (
-            <motion.div key={s.title} variants={fadeUp} className="group relative rounded-3xl border border-border bg-surface p-7 hover:border-primary/40 transition">
-              <div className="absolute top-6 right-7 font-serif text-5xl text-foreground/[0.06] group-hover:text-primary/15 transition">0{i + 1}</div>
-              <div className="w-11 h-11 rounded-xl bg-primary/15 border border-primary/30 flex items-center justify-center mb-6">
-                <s.icon className="w-5 h-5 text-primary" />
-              </div>
-              <h3 className="font-serif text-xl mb-2">{s.title}</h3>
-              <p className="text-sm text-muted-foreground leading-relaxed">{s.desc}</p>
-            </motion.div>
-          ))}
-        </div>
+        <motion.div variants={fadeUp} className="mt-12">
+          <ProductTour />
+        </motion.div>
       </Section>
 
       {/* FEATURES */}
