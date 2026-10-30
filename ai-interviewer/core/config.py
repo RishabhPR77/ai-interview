@@ -108,9 +108,12 @@ REPORT_RETENTION_HOURS = int(os.getenv("REPORT_RETENTION_HOURS", "24"))
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "100"))
 # Answers are analysed in background threads; each video analysis is CPU-heavy.
 ANALYSIS_WORKERS = int(os.getenv("ANALYSIS_WORKERS", "2"))
-# A job still "processing" after this long (e.g. the server restarted) is failed
-# so the candidate can re-submit.
-ANSWER_JOB_TIMEOUT_SECONDS = int(os.getenv("ANSWER_JOB_TIMEOUT_SECONDS", "900"))
+# A job still "processing" after this long is failed so the candidate can re-submit.
+# It covers only the quick step (transcribe + choose the next question).
+ANSWER_JOB_TIMEOUT_SECONDS = int(os.getenv("ANSWER_JOB_TIMEOUT_SECONDS", "180"))
+# Recordings wait here for background video analysis, then are deleted.
+RECORDINGS_DIR = DATA_DIR / "recordings"
+RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
 # Built frontend (vite build output). Served by FastAPI when present.
 STATIC_DIR = Path(os.getenv("STATIC_DIR", BASE_DIR.parent / "ai-interview-ui" / "dist"))
 # Opt-in local Whisper fallback (needs `pip install openai-whisper`, ~2GB with torch).

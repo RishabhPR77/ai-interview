@@ -6,7 +6,7 @@ from core import llm
 from prompts.templates import (
     QUESTION_GENERATION_PROMPT,
     SINGLE_QUESTION_GENERATION_PROMPT,
-    ADAPTIVE_FOLLOWUP_PROMPT,
+    ANSWER_TRIAGE_PROMPT,
     NEXT_QUESTION_SELECTION_PROMPT,
     PER_ANSWER_SCORING_PROMPT,
     FINAL_SUMMARY_PROMPT,
@@ -23,7 +23,7 @@ DEFAULT_MAX_TOKENS_FAST  = 2000
 SCORE_MAX_TOKENS         = 4000   # score_answer — per-answer scoring JSON
 SUMMARY_MAX_TOKENS       = 5000   # generate_final_summary — full report JSON
 QUESTION_GEN_MAX_TOKENS  = 4000   # generate_questions — multiple questions
-FOLLOWUP_MAX_TOKENS      = 1500   # generate_adaptive_followup — single question
+FOLLOWUP_MAX_TOKENS      = 1500   # triage_answer — quick read + optional follow-up
 
 
 def _is_text_truncated(text: str) -> bool:
@@ -292,11 +292,12 @@ def generate_questions(
     return questions
 
 
-def generate_adaptive_followup(question, answer, quality, gap):
-    # Uses fast model — simple task
-    return _call_llm(ADAPTIVE_FOLLOWUP_PROMPT.format(
-        question=question, answer=answer, quality=quality, gap=gap
-    ), max_tokens=FOLLOWUP_MAX_TOKENS, smart=False, call_name="generate_adaptive_followup")
+def triage_answer(job_title, difficulty, question, answer):
+    """Quick read of an answer so the next question can be shown right away.
+    Uses the fast model; full scoring happens in the background."""
+    return _call_llm(ANSWER_TRIAGE_PROMPT.format(
+        job_title=job_title, difficulty=difficulty, question=question, answer=answer,
+    ), max_tokens=FOLLOWUP_MAX_TOKENS, smart=False, call_name="triage_answer")
 
 
 def select_next_question(job_title, difficulty, rubric, topic_coverage, remaining_questions, last_quality, last_category):

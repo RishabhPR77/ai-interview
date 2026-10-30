@@ -15,6 +15,9 @@ services:
       DATABASE_URL: postgresql://tejaskrit:${POSTGRES_PASSWORD}@db:5432/tejaskrit
       # One answer analysis at a time keeps peak memory near 550 MB.
       ANALYSIS_WORKERS: "1"
+    volumes:
+      # Recordings waiting for background analysis must survive a restart.
+      - appdata:/data
     depends_on:
       db:
         condition: service_healthy
@@ -51,6 +54,7 @@ services:
       - app
 
 volumes:
+  appdata:
   pgdata:
   caddy_data:
   caddy_config:

@@ -1,6 +1,7 @@
 import logging
 import shutil
 import sys
+import threading
 from contextlib import asynccontextmanager
 
 # Progress logs print non-ASCII ("→", "—"). On Windows, redirected stdout is
@@ -15,11 +16,13 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
+from analysis import audio_analyzer
 from core import session_store
 from core.db import init_db
 from core.llm import AIError
 from routes.account import router as account_router
 from routes.auth import router as auth_router
+from routes import interview
 from routes.interview import router as interview_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -34,6 +37,8 @@ async def lifespan(_: FastAPI):
         log.info("Purged %d abandoned interview sessions", purged)
     if not shutil.which("ffmpeg"):
         log.warning("ffmpeg not found on PATH — video compression and audio extraction will fail")
+    interview.resume_background_work()
+    threading.Thread(target=audio_analyzer.warm_up, daemon=True).start()
     log.info("Started in %s mode", config.ENV)
     yield
 

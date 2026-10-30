@@ -52,7 +52,7 @@ export function Turnstile({ siteKey, onToken, onError }: {
         if (cancelled || !ref.current) return
         widgetId = api.render(ref.current, {
           sitekey: siteKey,
-          theme: 'light',
+          theme: 'dark',
           size: 'flexible',
           callback: (token: string) => callbacks.current.onToken(token),
           'expired-callback': () => callbacks.current.onToken(null),

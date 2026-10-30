@@ -96,6 +96,19 @@ def _transcribe_local(audio_path: str) -> dict:
     return result
 
 
+def warm_up() -> None:
+    """librosa's first use takes ~25s on a small server (lazy imports, JIT).
+    Pay that at startup, not while a candidate waits for their next question."""
+    import soundfile
+    y = np.zeros(16000, dtype=np.float32)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "warmup.wav")
+        soundfile.write(path, y, 16000)
+        y, sr = _get_librosa().load(path, sr=None)
+        _speech_seconds(y, sr)
+        _count_pauses(y, sr)
+
+
 # Loudness floor for speech (RMS ~0.008 ≈ -42 dBFS). An open mic with nobody
 # talking sits well below it; normal speech is roughly -30 to -12 dBFS.
 SPEECH_RMS_THRESHOLD = 0.008

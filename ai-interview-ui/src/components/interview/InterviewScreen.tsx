@@ -3,7 +3,8 @@ import {
   Circle, Loader2, CheckCircle2, Square, Video, RotateCcw, Send, LogOut,
   AlertOctagon, Maximize2, Minimize2, SkipForward, MicOff, Briefcase, Volume2, VolumeX,
 } from "lucide-react";
-import { submitAnswer, endInterview, skipQuestion, getInterviewState, type StartResponse, type ReportResponse } from "@/lib/interview-api";
+import { submitAnswer, skipQuestion, getInterviewState, type StartResponse } from "@/lib/interview-api";
+import { LoadingRing } from "@/components/LoadingRing";
 import { ApiError } from "@/lib/api";
 
   const SESSION_KEY = 'tejaskrit_session'
@@ -12,7 +13,7 @@ import { ApiError } from "@/lib/api";
     start: StartResponse;
     candidateName: string;
     jobTitle: string;
-    onComplete: (report: ReportResponse, endedEarly?: boolean) => void;
+    onComplete: (endedEarly?: boolean) => void;
     onError: (message: string) => void;
   }
 
@@ -24,19 +25,10 @@ import { ApiError } from "@/lib/api";
     { key: "cultural_fit", label: "Cultural Fit" },
   ];
 
-  const STEPS = [
-    "Compressing video...",
-    "Transcribing audio...",
-    "Analysing face & gaze...",
-    "Scoring answer...",
-  ];
-
   const PROCESSING_MESSAGES = [
-    "Taking your answer...",
-    "Transcribing what you said...",
-    "Analysing your expressions...",
-    "Scoring your response...",
-    "Getting your next question...",
+    "Saving your answer...",
+    "Listening to what you said...",
+    "Choosing your next question...",
   ];
 
   type RecState = 'idle' | 'recording' | 'review' | 'processing'
@@ -326,13 +318,12 @@ import { ApiError } from "@/lib/api";
       endingEarlyRef.current = true;
       setEndingEarly(true);
       try {
-        const report = await endInterview(start.session_id);
         streamRef.current?.getTracks().forEach(t => t.stop());
         if (timerRef.current) window.clearInterval(timerRef.current);
         if (stepTimerRef.current) window.clearInterval(stepTimerRef.current);
         if (muteCheckRef.current) window.clearInterval(muteCheckRef.current);
         audioCtxRef.current?.close().catch(() => {});
-        onComplete(report, true);
+        onComplete(true);
       } catch (e: any) {
         endingEarlyRef.current = false;
         setEndingEarly(false);
@@ -403,7 +394,9 @@ import { ApiError } from "@/lib/api";
         blobType = mime;
       }
 
-      const rec = new MediaRecorder(streamRef.current, { mimeType: mime });
+      // The server analyses video at 640×480, so a modest bitrate loses nothing
+      // and keeps uploads quick on home connections.
+      const rec = new MediaRecorder(streamRef.current, { mimeType: mime, videoBitsPerSecond: 900_000, audioBitsPerSecond: 64_000 });
       rec.ondataavailable = (e) => e.data.size > 0 && chunksRef.current.push(e.data);
       rec.onstop = () => {
         // Ignore if this recorder was replaced by a re-record
@@ -490,8 +483,7 @@ import { ApiError } from "@/lib/api";
       try {
         const state = await getInterviewState(start.session_id);
         if (state.status === "complete") {
-          const report = await endInterview(start.session_id);
-          onComplete(report);
+          onComplete();
           return true;
         }
         applyNextQuestion(state);
@@ -507,18 +499,15 @@ import { ApiError } from "@/lib/api";
       setRecState('processing');
       setProcessingStep(0);
       stepTimerRef.current = window.setInterval(() => {
-        setProcessingStep(s => Math.min(s + 1, STEPS.length - 1));
-      }, 1200);
+        setProcessingStep(s => Math.min(s + 1, PROCESSING_MESSAGES.length - 1));
+      }, 1500);
 
       try {
         const res = await submitAnswer(start.session_id, currentQ.question_id, pendingBlob, !!cameraFailed);
         if (stepTimerRef.current) { window.clearInterval(stepTimerRef.current); stepTimerRef.current = null; }
-        setProcessingStep(STEPS.length);
-        await new Promise(r => setTimeout(r, 400));
 
         if (res.status === "complete") {
-          const report = await endInterview(start.session_id);
-          onComplete(report);
+          onComplete();
           return;
         }
 
@@ -549,8 +538,7 @@ import { ApiError } from "@/lib/api";
       try {
         const res = await skipQuestion(start.session_id, currentQ.question_id);
         if (res.status === "complete") {
-          const report = await endInterview(start.session_id);
-          onComplete(report);
+          onComplete();
           return;
         }
         applyNextQuestion(res);
@@ -572,11 +560,14 @@ import { ApiError } from "@/lib/api";
 
         {/* Full-screen processing overlay */}
         {processing && (
-          <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/70 backdrop-blur-sm gap-6">
-            <Loader2 className="w-20 h-20 text-primary animate-spin" />
-            <p className="text-white text-lg font-medium tracking-wide">
-              {PROCESSING_MESSAGES[Math.min(processingStep, PROCESSING_MESSAGES.length - 1)]}
-            </p>
+          <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-app/85 backdrop-blur-md gap-7 px-6 text-center">
+            <LoadingRing size={128} />
+            <div>
+              <p className="font-serif text-2xl sm:text-3xl">
+                {PROCESSING_MESSAGES[Math.min(processingStep, PROCESSING_MESSAGES.length - 1)]}
+              </p>
+              <p className="mt-2 text-sm text-muted-foreground">Your next question will be here in a moment.</p>
+            </div>
           </div>
         )}
 

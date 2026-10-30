@@ -8,9 +8,10 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from core import session_store
 from core.ai_settings import get_keys, get_settings_row
 from core.config import COOKIE_SAMESITE, COOKIE_SECURE, SESSION_COOKIE_NAME
 from core.db import (
@@ -151,6 +152,8 @@ def get_models(provider: ProviderId, user: User = Depends(current_user), db: Ses
 @router.delete("")
 def delete_account(response: Response, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """Permanently delete the account, its keys, settings and any in-progress interviews."""
+    for session_id in db.execute(select(InterviewSession.id).where(InterviewSession.user_id == user.id)).scalars().all():
+        session_store.delete_recordings(session_id)
     db.execute(delete(InterviewSession).where(InterviewSession.user_id == user.id))
     db.execute(delete(InterviewReport).where(InterviewReport.user_id == user.id))
     db.execute(delete(UsageEvent).where(UsageEvent.user_id == user.id))

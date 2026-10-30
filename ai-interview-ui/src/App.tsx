@@ -1,9 +1,9 @@
 import { useEffect, type ReactNode } from 'react'
-import { Loader2 } from 'lucide-react'
 import { InterviewApp } from './InterviewApp'
 import { LandingPage } from './pages/LandingPage'
 import { LoginPage } from './pages/LoginPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { LoadingRing } from './components/LoadingRing'
 import { LogoMark } from './components/brand/Logo'
 import { useAuth } from './lib/auth'
 import { navigate, useLocation } from './lib/router'
@@ -11,8 +11,7 @@ import { navigate, useLocation } from './lib/router'
 function Splash() {
   return (
     <div className="min-h-screen bg-app flex flex-col items-center justify-center gap-5">
-      <LogoMark className="w-11 h-11 animate-pulse-glow" />
-      <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+      <LoadingRing size={96}><LogoMark className="w-9 h-9" /></LoadingRing>
     </div>
   )
 }

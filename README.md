@@ -137,37 +137,30 @@ Parallel flow: `/detect-seniority` runs at setup; `/start` creates the session; 
 
 ## How an answer is processed
 
-Every submitted video goes through a strict 4-step pipeline. Files are temporarily written to disk and cleaned up afterwards. If the candidate records audio-only (webcam unavailable), the video compression and MediaPipe steps are skipped — the raw audio is converted to WAV and analyzed directly.
+Candidates shouldn't wait minutes between questions, so each answer is handled in **two stages**. Video analysis alone takes about 1.5× the length of the recording on a small server.
 
-<details>
-<summary>Expand pipeline diagram</summary>
+**1. Quick (a few seconds, the client polls `answer-status`)** — extract the audio, transcribe it, take a quick read with the fast model (`triage_answer`: first-estimate score and any follow-up), then choose the next question. Unreadable recordings fail here, so the candidate can resubmit. A silent recording gets one chance to re-record; submitting it again scores 0 with `no_speech_detected`.
+
+**2. Background (a queue, `ANALYSIS_WORKERS` at a time, low CPU priority)** — MediaPipe video analysis and full scoring with the evaluation model replace the first estimate, then the recording is deleted. Recordings wait in `DATA_DIR/recordings/<session>/`, and the queue's state lives in the session, so a server restart resumes where it left off. If an answer can't be analysed it keeps its first estimate rather than blocking the report.
+
+**After the interview** — `POST /interview/end` returns `preparing` straight away. When the queue has drained, the report is generated and stored; the page polls `report-status` and shows it, or, if the candidate has left, they get an email link to `/app?report=<session>`.
 
 ```mermaid
 flowchart TD
-    A["Candidate video<br/>(webm/mp4 upload)"] --> B["[0/4] _compress_video<br/>ffmpeg scale=640:480 crf=28"]
-    B --> C["[1/4] _extract_audio<br/>ffmpeg → 16kHz mono WAV"]
-    C --> D["[2/4] audio_analyzer<br/>user's STT model → transcript<br/>librosa → WPM, pauses, fillers, hedging, confidence"]
-    D --> E["[3/4] video_analyzer<br/>MediaPipe FaceLandmarker + Pose<br/>→ eye contact %, posture, expressions, gestures, fatigue"]
-    E --> F["[4/4] scoring_engine<br/>semantic similarity + LLM per-answer score"]
-
-    F --> G{"answer quality"}
-    G -- "silent / < 3 words" --> H["Score 0, anomaly_flagged,<br/>justification: no_speech_detected"]
-    G -- "weak (<5 content)" --> I["follow_up_triggered=true<br/>generate_adaptive_followup"]
-    G -- "good" --> J["store conversation entry<br/>increment topic_coverage"]
-    I --> K["synthesize follow-up question<br/>id = max_id + 1, is_follow_up"]
-    K --> L["return next question to UI"]
-
-    subgraph LLM["LLM calls (user's models)"]
-        M["score_answer (MODEL_SMART)"]
-        N["generate_adaptive_followup (MODEL_FAST)"]
-        O["select_next_question (MODEL_FAST)"]
-    end
-    F --> M
-    I --> N
-    G --> O
+    A["Recording uploaded"] --> B["Extract audio, transcribe<br/>WPM, pauses, fillers, hedging"]
+    B --> C{"silent?"}
+    C -- "first time" --> D["Ask to re-record"]
+    C -- "again" --> E["Score 0: no_speech_detected"]
+    C -- "no" --> F["triage_answer (fast model)<br/>first estimate + follow-up?"]
+    F --> G["Next question shown<br/>(follow-up or select_next_question)"]
+    F --> H["Background queue"]
+    H --> I["MediaPipe video analysis"]
+    I --> J["score_answer (evaluation model)"]
+    J --> K["Update answer, delete recording"]
+    K --> L{"Interview ended and<br/>queue empty?"}
+    L -- "yes" --> M["Generate report"]
+    M --> N["Page shows report,<br/>or email link if they left"]
 ```
-
-</details>
 
 ---
 
@@ -451,11 +444,12 @@ All routes are under `/api/v1`. State-changing requests must send `X-Requested-W
 | DELETE | `/account` | — | deletes account, keys, settings, in-progress interviews |
 | POST | `/interview/start` | `job_title`, `job_description`, `candidate_name`, `candidate_resume`, `num_questions`, `interview_type`, `difficulty`, `rubric` | session id + first question (409 `ai_not_configured` if setup incomplete) |
 | POST | `/interview/detect-seniority` | `{job_description, resume_text}` | `{difficulty, interview_type, reasoning}` |
-| POST | `/interview/answer` | multipart: `session_id`, `question_id`, `video`, `is_audio_only` | `202 {"status":"processing"}` — analysis runs in the background (409 `stale_question` / `answer_processing` for replays or double-submits) |
+| POST | `/interview/answer` | multipart: `session_id`, `question_id`, `video`, `is_audio_only` | `202 {"status":"processing"}` — the quick step runs in the background (409 `stale_question` / `answer_processing` for replays or double-submits) |
 | GET | `/interview/{session_id}/answer-status?question_id=` | — | `processing`, `error` (+ `detail`, re-submit allowed), or the next question / follow-up / `complete` |
 | GET | `/interview/{session_id}/state` | — | current question + status (used to resync) |
 | POST | `/interview/{session_id}/skip` | `{question_id}` | next question or complete |
-| POST | `/interview/end` | form: `session_id` | final report; the live session is deleted and the report kept for `REPORT_RETENTION_HOURS` (retrying returns the stored report) |
+| POST | `/interview/end` | form: `session_id` | `{status:"preparing", analysed, total}` — the report is built in the background and kept for `REPORT_RETENTION_HOURS` (retrying is safe; once built, returns the report) |
+| GET | `/interview/{session_id}/report-status` | — | `ongoing`, `preparing` (+ `analysed`, `total`), `ready` or `failed` (+ `detail`, retry with `/interview/end`) |
 | GET | `/interview/{session_id}/report` | — | a stored report, until it expires |
 | GET | `/auth/config` | — | `{turnstile_site_key}` for the sign-in page |
 | GET | `/health` | — | `{status, ffmpeg}` |
@@ -477,7 +471,7 @@ See [`ai-interviewer/.env.example`](ai-interviewer/.env.example) for the full li
 | `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | Cloudflare Turnstile bot check on sign-in (both or neither) |
 | `MAX_INTERVIEWS_PER_DAY`, `MAX_ANSWER_SECONDS` | Per-user daily interview quota; longest answer analysed |
 | `REPORT_RETENTION_HOURS` | How long a finished report can be reopened (default 24) |
-| `ANALYSIS_WORKERS` | Parallel answer analyses per server |
+| `ANALYSIS_WORKERS` | Background answer analyses run at once per server (1 on a 1 GB VM) |
 | `COOKIE_SAMESITE`, `CORS_ORIGINS` | Only for split frontend/backend hosting |
 | `MAX_UPLOAD_MB`, `LOCAL_WHISPER_FALLBACK` | Upload cap (default 100); optional offline Whisper (`requirements-local-whisper.txt`) |
 

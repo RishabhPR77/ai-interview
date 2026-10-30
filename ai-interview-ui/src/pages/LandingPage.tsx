@@ -150,14 +150,14 @@ function HeroVisual() {
         </div>
 
         {/* video area */}
-        <div className="relative h-[calc(100%-44px)] bg-[radial-gradient(ellipse_at_50%_30%,#3a332b,#1a1814_70%)]">
+        <div className="relative h-[calc(100%-44px)] bg-[radial-gradient(ellipse_at_50%_30%,#1b3a34,#0a1513_70%)]">
           <div className="absolute inset-0 grid-bg opacity-40" />
           {/* silhouette */}
           <svg viewBox="0 0 200 160" className="absolute left-1/2 -translate-x-1/2 bottom-0 w-[80%] sm:w-[58%]" aria-hidden>
             <defs>
               <linearGradient id="sil" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0" stopColor="#5a5046" />
-                <stop offset="1" stopColor="#2a251f" />
+                <stop offset="0" stopColor="#34564e" />
+                <stop offset="1" stopColor="#12201d" />
               </linearGradient>
             </defs>
             <ellipse cx="100" cy="62" rx="30" ry="36" fill="url(#sil)" />
@@ -241,7 +241,8 @@ const FEATURES = [
 const FAQ = [
   { q: 'Why do I need my own API key?', a: 'You choose the model that evaluates you — and you pay your provider directly at their rates, with no markup. Keys are encrypted before they touch our database and are never sent back to your browser.' },
   { q: 'Which models can I use?', a: 'Any chat model your Anthropic, OpenAI, Groq, Gemini or OpenRouter key can access, for evaluation. Transcription can use Groq or OpenAI Whisper-family models, or an audio-capable Gemini / OpenRouter model. You can pick a separate cheaper model for quick routing decisions.' },
-  { q: 'Do you store my recordings?', a: 'No. Each answer is processed in a temporary file that is deleted as soon as it has been analysed. Your finished report is kept for 24 hours so you can reopen it, then deleted; abandoned interviews are purged after 48 hours.' },
+  { q: 'Do you store my recordings?', a: 'No. Each recording is kept only until it has been analysed, usually a few minutes, and is then deleted. Your finished report is kept for 24 hours so you can reopen it, then deleted; abandoned interviews are purged after 48 hours.' },
+  { q: 'How long does the report take?', a: 'The next question appears a few seconds after each answer, so the interview flows like a real one. Your full report follows a few minutes after you finish, and we email you a link, so there is no need to wait on the page.' },
   { q: 'Is anything shared with employers?', a: 'No. This is a private practice tool. Your transcript is sent only to the AI provider you selected, under your own key.' },
   { q: 'How do I sign in?', a: 'With your email — we send a one-time 6-digit code. No passwords to remember or leak.' },
 ]
@@ -288,7 +289,7 @@ function ReportPreview() {
             </div>
             <div className="h-1.5 rounded-full bg-secondary overflow-hidden">
               <motion.div
-                className="h-full rounded-full bg-gradient-to-r from-primary to-[#b8361a]"
+                className="h-full rounded-full bg-gradient-to-r from-primary to-[#1c8fa8]"
                 initial={{ width: 0 }} whileInView={{ width: `${score * 10}%` }} viewport={{ once: true }}
                 transition={{ duration: 1.1, delay: 0.1 * i, ease: [0.2, 0.7, 0.2, 1] }}
               />
@@ -323,7 +324,9 @@ export function LandingPage() {
       {/* HERO */}
       <div className="relative">
         <div className="absolute inset-0 grid-bg opacity-60 pointer-events-none" />
-        <div className="absolute -top-40 left-1/2 -translate-x-1/2 w-[900px] h-[600px] rounded-full bg-primary/12 blur-[120px] pointer-events-none" />
+        <div className="aurora-a -top-40 -left-20 w-[620px] h-[520px]" />
+        <div className="aurora-b top-10 right-[-120px] w-[560px] h-[480px]" />
+        <div className="aurora-c top-[320px] left-[38%] w-[420px] h-[320px]" />
         <div className="absolute inset-0 noise-overlay pointer-events-none" />
 
         <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-10 pt-32 sm:pt-36 pb-20 lg:pb-28 grid lg:grid-cols-[1.05fr_1fr] gap-14 lg:gap-10 items-center">
@@ -353,7 +356,7 @@ export function LandingPage() {
               </a>
             </motion.div>
             <motion.div variants={fadeUp} className="mt-8 flex flex-wrap gap-x-6 gap-y-2 text-sm text-muted-foreground">
-              {['No password — email code sign-in', 'Recordings never stored', 'Your key, your model'].map(t => (
+              {['No password — email code sign-in', 'Recordings deleted after analysis', 'Your key, your model'].map(t => (
                 <span key={t} className="inline-flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-success" /> {t}</span>
               ))}
             </motion.div>

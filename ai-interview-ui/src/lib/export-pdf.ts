@@ -3,13 +3,13 @@ import type { ReportResponse } from './interview-api'
 
 type RGB = [number, number, number]
 
-// Warm editorial palette, matching the web app: ink on white with one orange accent.
-const INK    : RGB = [26, 24, 20]
-const INK2   : RGB = [84, 78, 69]
-const INK3   : RGB = [128, 120, 108]
-const RULE   : RGB = [222, 213, 198]
-const CREAM  : RGB = [246, 241, 232]
-const ORANGE : RGB = [228, 87, 46]
+// Print-friendly version of the app's palette: dark ink on white with a deep teal accent.
+const INK    : RGB = [14, 28, 25]
+const INK2   : RGB = [62, 80, 75]
+const INK3   : RGB = [112, 130, 124]
+const RULE   : RGB = [212, 224, 220]
+const TINT   : RGB = [238, 246, 243]
+const ACCENT : RGB = [13, 148, 120]
 const GREEN  : RGB = [47, 125, 79]
 const AMBER  : RGB = [168, 101, 15]
 const RED    : RGB = [196, 47, 47]
@@ -89,7 +89,7 @@ export async function buildReportPDF(report: ReportResponse, candidateName: stri
     font('bold', 15, INK, 'times')
     doc.text(text, M, y + 5)
     y += 8
-    doc.setDrawColor(...ORANGE)
+    doc.setDrawColor(...ACCENT)
     doc.setLineWidth(0.6)
     doc.line(M, y, M + 14, y)
     y += 6
@@ -117,7 +117,7 @@ export async function buildReportPDF(report: ReportResponse, candidateName: stri
   const role = clean(report.job_title || jobTitle)
   const date = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
 
-  font('bold', 8, ORANGE)
+  font('bold', 8, ACCENT)
   doc.text('TEJASKRIT', M, y + 3)
   font('normal', 8, INK3)
   doc.text('Interview practice report', M + doc.getTextWidth('TEJASKRIT') + 6, y + 3)
@@ -150,7 +150,7 @@ export async function buildReportPDF(report: ReportResponse, candidateName: stri
   const score = Math.round(report.overall_score ?? 0)
   const boxH = 34
   ensure(boxH + 4)
-  doc.setFillColor(...CREAM)
+  doc.setFillColor(...TINT)
   doc.roundedRect(M, y, CW, boxH, 3, 3, 'F')
 
   font('bold', 40, scoreColor(score, 100), 'times')
@@ -218,7 +218,7 @@ export async function buildReportPDF(report: ReportResponse, candidateName: stri
       font('normal', 9, INK3)
       doc.text(weight != null ? `${weight}%` : '—', M + 70, rowY)
       const bx = M + 88, bw = CW - 88 - 22
-      doc.setFillColor(...CREAM)
+      doc.setFillColor(...TINT)
       doc.roundedRect(bx, rowY - 2.4, bw, 2.6, 1.3, 1.3, 'F')
       doc.setFillColor(...scoreColor(v, 10))
       doc.roundedRect(bx, rowY - 2.4, Math.max(2.6, bw * v / 10), 2.6, 1.3, 1.3, 'F')
@@ -283,7 +283,7 @@ export async function buildReportPDF(report: ReportResponse, candidateName: stri
     const cat = q.category ? prettyLabel(q.category) : ''
     ensure(32) // keep the header, question and the start of the answer together
 
-    font('bold', 8, ORANGE)
+    font('bold', 8, ACCENT)
     doc.text(`${label.toUpperCase()}${cat ? `  ·  ${cat.toUpperCase()}` : ''}`, M, y + 3)
     if (q.anomaly_flagged) {
       font('bold', 7, AMBER)
@@ -309,9 +309,9 @@ export async function buildReportPDF(report: ReportResponse, candidateName: stri
       const room = Math.floor((BOTTOM - y - 6) / lh)
       const chunk = aLines.slice(idx, idx + Math.max(1, room))
       const h = chunk.length * lh + 6
-      doc.setFillColor(...CREAM)
+      doc.setFillColor(...TINT)
       doc.roundedRect(M, y, CW, h, 2, 2, 'F')
-      doc.setFillColor(...ORANGE)
+      doc.setFillColor(...ACCENT)
       doc.rect(M, y, 0.8, h, 'F')
       font('normal', 9, INK2)
       chunk.forEach((line, li) => doc.text(line, M + 5, y + 3 + lh * (li + 0.75)))

@@ -139,9 +139,9 @@ export function startInterview(req: StartRequest): Promise<StartResponse> {
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
-/** Poll until the background analysis of this answer finishes. */
+/** Poll until the server has processed this answer and chosen the next question. */
 async function waitForAnswer(session_id: string, question_id: number): Promise<AnswerResponse> {
-  const deadline = Date.now() + 15 * 60 * 1000
+  const deadline = Date.now() + 4 * 60 * 1000
   let networkFailures = 0
   while (Date.now() < deadline) {
     await sleep(1500)
@@ -150,20 +150,20 @@ async function waitForAnswer(session_id: string, question_id: number): Promise<A
       res = await api(`/interview/${session_id}/answer-status?question_id=${question_id}`)
       networkFailures = 0
     } catch (e) {
-      // Ride out brief connection drops; the analysis keeps running server-side.
+      // Ride out brief connection drops; processing keeps running server-side.
       if (e instanceof ApiError && e.status === 0 && ++networkFailures < 20) continue
       throw e
     }
     if (res.status === 'processing') continue
     if (res.status === 'error') {
-      throw new ApiError((res as { detail?: string }).detail ?? 'Analysis failed. Please submit again.', 422, 'answer_failed')
+      throw new ApiError((res as { detail?: string }).detail ?? 'Something went wrong. Please submit again.', 422, 'answer_failed')
     }
     return res as AnswerResponse
   }
-  throw new ApiError('Analysing your answer is taking unusually long. Please try submitting again.', 504, 'answer_timeout')
+  throw new ApiError('This is taking unusually long. Please try submitting again.', 504, 'answer_timeout')
 }
 
-/** Upload an answer, then wait for the server to analyse and score it. */
+/** Upload an answer, then wait for the next question. Full analysis runs in the background. */
 export async function submitAnswer(
   session_id: string,
   question_id: number,
@@ -180,7 +180,7 @@ export async function submitAnswer(
   try {
     await api<{ status: 'processing' }>('/interview/answer', { method: 'POST', body: fd })
   } catch (e) {
-    // Already being analysed (e.g. a retry after a dropped connection) — just wait for it.
+    // Already being processed (e.g. a retry after a dropped connection) — just wait for it.
     if (!(e instanceof ApiError && e.code === 'answer_processing')) throw e
   }
   return waitForAnswer(session_id, question_id)
@@ -200,23 +200,23 @@ export async function getReport(session_id: string): Promise<ReportResponse> {
   return normalizeReport(await api<ReportResponse>(`/interview/${session_id}/report`))
 }
 
-export async function endInterview(session_id: string): Promise<ReportResponse> {
+export interface ReportProgress {
+  status: 'preparing' | 'ready' | 'failed' | 'ongoing'
+  analysed?: number
+  total?: number
+  detail?: string
+}
+
+/** End the interview. The report is built in the background — see getReportStatus. */
+export async function finishInterview(session_id: string): Promise<{ report?: ReportResponse }> {
   const fd = new FormData()
   fd.append('session_id', session_id)
-  try {
-    return normalizeReport(await api<ReportResponse>('/interview/end', { method: 'POST', body: fd }))
-  } catch (e) {
-    // The report may have been generated even though the response was lost.
-    if (e instanceof ApiError && (e.status === 0 || e.status >= 500)) {
-      await new Promise(r => setTimeout(r, 2000))
-      try {
-        return await getReport(session_id)
-      } catch {
-        /* fall through to the original error */
-      }
-    }
-    throw e
-  }
+  const res = await api<ReportResponse | ReportProgress>('/interview/end', { method: 'POST', body: fd })
+  return 'overall_score' in res ? { report: normalizeReport(res) } : {}
+}
+
+export function getReportStatus(session_id: string): Promise<ReportProgress> {
+  return api(`/interview/${session_id}/report-status`)
 }
 
 function normalizeReport(report: ReportResponse): ReportResponse {

@@ -38,7 +38,7 @@ const STEPS: { title: string; caption: string; path: string; cursor: Waypoint[] 
   },
   {
     title: 'Read your report',
-    caption: 'Scores for content, delivery and presence, with strengths, gaps and a PDF.',
+    caption: 'Ready minutes after you finish, and we email you the link. Scores, strengths, gaps and a PDF.',
     path: '/report',
     cursor: [{ at: 0, x: 82, y: 92 }, { at: 8, x: 25, y: 44 }, { at: 22, x: 70, y: 40 }, { at: 36, x: 77, y: 85, click: true }],
   },
@@ -172,7 +172,7 @@ function Answer({ t }: { t: number }) {
         </div>
       </div>
       <div className={`${button} ${recording ? 'bg-destructive text-white' : t >= 39 ? 'bg-secondary text-muted-foreground' : 'bg-primary text-primary-foreground'}`} style={at(80, 30, 30, 11)}>
-        {t >= 39 ? <><Loader2 className="w-[1em] h-[1em] animate-spin" /> Analysing your answer…</> : recording ? 'Stop & submit' : <><Mic className="w-[1em] h-[1em]" /> Start answering</>}
+        {t >= 39 ? <><Loader2 className="w-[1em] h-[1em] animate-spin" /> Next question coming up…</> : recording ? 'Stop & submit' : <><Mic className="w-[1em] h-[1em]" /> Start answering</>}
       </div>
     </>
   )

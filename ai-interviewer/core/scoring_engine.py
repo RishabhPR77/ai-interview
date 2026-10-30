@@ -181,9 +181,6 @@ def score_single_answer(session: dict, question: dict, audio_signals: dict, vide
             "justification": "No spoken answer was detected for this question — the recording contained little to no speech.",
             "anomaly_flagged": True,
             "anomaly_reason": "no_speech_detected",
-            "follow_up_triggered": False,
-            "follow_up_reason": None,
-            "follow_up_question": None,
             "semantic_similarity": -1.0,
         }
 
@@ -202,18 +199,6 @@ def score_single_answer(session: dict, question: dict, audio_signals: dict, vide
         semantic_similarity=semantic_similarity,
     )
 
-    follow_up_question = None
-    follow_up_triggered = scores.get("follow_up_needed", False)
-
-    if follow_up_triggered:
-        fu = llm_client.generate_adaptive_followup(
-            question=question["text"],
-            answer=answer_text,
-            quality="weak" if scores.get("content_score", 5) < 5 else "suspicious",
-            gap=scores.get("follow_up_reason", "answer lacked depth"),
-        )
-        follow_up_question = fu.get("follow_up_question")
-
     return {
         "question_id": question["id"],
         "question_text": question["text"],
@@ -230,9 +215,6 @@ def score_single_answer(session: dict, question: dict, audio_signals: dict, vide
         "justification": scores.get("justification", ""),
         "anomaly_flagged": scores.get("anomaly_flagged", False),
         "anomaly_reason": scores.get("anomaly_reason"),
-        "follow_up_triggered": follow_up_triggered,
-        "follow_up_reason": scores.get("follow_up_reason"),
-        "follow_up_question": follow_up_question,
         "semantic_similarity": semantic_similarity,
     }
 

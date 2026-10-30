@@ -676,8 +676,8 @@ export function CameraCheckScreen({ candidateName, onReady, onBack }: Props) {
         </div>
       </header>
 
-      <div className="pointer-events-none fixed -top-40 -left-40 w-[520px] h-[520px] rounded-full blur-[120px] opacity-25 bg-primary" />
-      <div className="pointer-events-none fixed top-1/3 -right-40 w-[480px] h-[480px] rounded-full blur-[120px] opacity-20 bg-[#e8b04a]" />
+      <div className="pointer-events-none fixed -top-40 -left-40 w-[520px] h-[520px] rounded-full blur-[120px] opacity-20 bg-[#1fae8f]" />
+      <div className="pointer-events-none fixed top-1/3 -right-40 w-[480px] h-[480px] rounded-full blur-[120px] opacity-15 bg-[#1c8fa8]" />
 
       <div className="flex-1 flex items-center justify-center px-4 py-10">
         <div className="relative w-full max-w-2xl">
