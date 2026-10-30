@@ -11,6 +11,7 @@ analysis, skipping, ending) run under `lock(session_id)`. The lock is
 per-process, so run a single instance per database — see the Dockerfile.
 """
 import json
+import shutil
 import threading
 import time
 import uuid
@@ -19,8 +20,9 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Iterator, Optional
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
+from core.config import RECORDINGS_DIR
 from core.db import InterviewReport, InterviewSession, SessionLocal, UsageEvent, utcnow
 
 _locks: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
@@ -88,7 +90,8 @@ def create_session(meta: dict, question_bank: list, user_id: str) -> dict:
             "cultural_fit": 0,
         },
         "follow_ups_used": 0,
-        "answer_job": None,              # background analysis of the current answer
+        "answer_job": None,              # quick processing of the current answer
+        "report_state": None,            # None until ended: preparing | generating | failed
         "status": "ongoing",             # ongoing | complete
         "last_quality": "unknown",       # quality of last answer for adaptive logic
         "start_time": _now_iso(),
@@ -139,10 +142,21 @@ def complete_session(session: dict) -> None:
     session["end_time"] = _now_iso()
 
 
+def recordings_dir(session_id: str) -> str:
+    path = RECORDINGS_DIR / session_id
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
+def delete_recordings(session_id: str) -> None:
+    shutil.rmtree(RECORDINGS_DIR / session_id, ignore_errors=True)
+
+
 def delete_session(session_id: str) -> None:
     with SessionLocal() as db:
         db.execute(delete(InterviewSession).where(InterviewSession.id == session_id))
         db.commit()
+    delete_recordings(session_id)
     with _locks_guard:
         _locks.pop(session_id, None)
 
@@ -156,4 +170,9 @@ def purge_stale(max_age_hours: int = 48) -> int:
         db.execute(delete(InterviewReport).where(InterviewReport.expires_at < now))
         db.execute(delete(UsageEvent).where(UsageEvent.created_at < now - timedelta(days=7)))
         db.commit()
+        live = set(db.execute(select(InterviewSession.id)).scalars())
+    # Recordings must never outlive their interview.
+    for path in RECORDINGS_DIR.iterdir():
+        if path.name not in live:
+            shutil.rmtree(path, ignore_errors=True)
     return result.rowcount or 0

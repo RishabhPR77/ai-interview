@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import { toast, Toaster } from 'sonner'
 import { AppHeader } from '@/components/AppHeader'
+import { LoadingRing } from '@/components/LoadingRing'
 import { ModelSelect, type SelectOption } from '@/components/ModelSelect'
 import { ApiError } from '@/lib/api'
 import {
@@ -470,7 +471,7 @@ export function SettingsPage() {
 
         {error && <div className="rounded-2xl border border-destructive/30 bg-destructive/10 px-5 py-4 text-sm text-destructive">{error}</div>}
         {!settings && !error && (
-          <div className="flex items-center gap-2 text-muted-foreground text-sm py-10 justify-center"><Loader2 className="w-4 h-4 animate-spin" /> Loading settings…</div>
+          <div className="flex flex-col items-center gap-3 text-muted-foreground text-sm py-12"><LoadingRing size={72} /> Loading settings…</div>
         )}
 
         {settings && (

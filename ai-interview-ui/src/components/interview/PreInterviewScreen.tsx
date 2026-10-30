@@ -30,11 +30,11 @@ const TIPS = [
 ];
 
 const CATEGORY_COLORS: Record<string, string> = {
-  technical_depth:       "bg-blue-500/15 text-blue-400 border-blue-500/20",
-  problem_solving:       "bg-purple-500/15 text-purple-400 border-purple-500/20",
-  communication_clarity: "bg-cyan-500/15 text-cyan-400 border-cyan-500/20",
-  confidence:            "bg-amber-500/15 text-amber-400 border-amber-500/20",
-  cultural_fit:          "bg-green-500/15 text-green-400 border-green-500/20",
+  technical_depth:       "bg-sky-400/10 text-sky-300 border-sky-400/25",
+  problem_solving:       "bg-violet-400/10 text-violet-300 border-violet-400/25",
+  communication_clarity: "bg-teal-400/10 text-teal-300 border-teal-400/25",
+  confidence:            "bg-amber-400/10 text-amber-300 border-amber-400/25",
+  cultural_fit:          "bg-emerald-400/10 text-emerald-300 border-emerald-400/25",
 };
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -84,8 +84,8 @@ export function PreInterviewScreen({ start, jobTitle, candidateName, rubric, onB
       </header>
 
       {/* Blobs */}
-      <div className="pointer-events-none fixed -top-40 -left-40 w-[520px] h-[520px] rounded-full blur-[120px] opacity-20 bg-[oklch(0.55_0.22_285)]" />
-      <div className="pointer-events-none fixed top-1/3 -right-40 w-[480px] h-[480px] rounded-full blur-[120px] opacity-15 bg-[oklch(0.65_0.18_200)]" />
+      <div className="pointer-events-none fixed -top-40 -left-40 w-[520px] h-[520px] rounded-full blur-[120px] opacity-20 bg-[#1fae8f]" />
+      <div className="pointer-events-none fixed top-1/3 -right-40 w-[480px] h-[480px] rounded-full blur-[120px] opacity-15 bg-[#1c8fa8]" />
 
       <div className="flex-1 flex items-start justify-center px-4 py-10">
         <div className="w-full max-w-2xl space-y-5">

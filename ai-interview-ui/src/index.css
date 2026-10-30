@@ -35,37 +35,38 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  --color-app: #0a0a0f;
-  --color-surface: #111118;
+  --color-app: #07100f;
+  --color-surface: #0f1a18;
   --font-serif: 'DM Serif Display', serif;
   --font-sans: 'DM Sans', sans-serif;
 }
 
 :root {
+  /* Deep pine: green-black paper, luminous mint accent, warm gold highlight. */
   --radius: 0.75rem;
-  --background: oklch(0.13 0.015 280);
-  --foreground: oklch(0.97 0.005 280);
-  --card: oklch(0.17 0.018 280);
-  --card-foreground: oklch(0.97 0.005 280);
-  --popover: oklch(0.17 0.018 280);
-  --popover-foreground: oklch(0.97 0.005 280);
-  --primary: oklch(0.65 0.2 285);
-  --primary-foreground: oklch(0.98 0.005 280);
-  --secondary: oklch(0.22 0.02 280);
-  --secondary-foreground: oklch(0.97 0.005 280);
-  --muted: oklch(0.22 0.02 280);
-  --muted-foreground: oklch(0.68 0.02 280);
-  --accent: oklch(0.65 0.2 285);
-  --accent-foreground: oklch(0.98 0.005 280);
-  --destructive: oklch(0.62 0.22 25);
-  --destructive-foreground: oklch(0.98 0.005 280);
-  --success: oklch(0.68 0.18 145);
-  --success-foreground: oklch(0.1 0 0);
-  --warning: oklch(0.78 0.16 75);
-  --warning-foreground: oklch(0.1 0 0);
-  --border: oklch(0.25 0.018 280);
-  --input: oklch(0.22 0.02 280);
-  --ring: oklch(0.65 0.2 285);
+  --background: #07100f;
+  --foreground: #ecf4f0;
+  --card: #0f1a18;
+  --card-foreground: #ecf4f0;
+  --popover: #0f1a18;
+  --popover-foreground: #ecf4f0;
+  --primary: #2dd4a7;
+  --primary-foreground: #04201a;
+  --secondary: #172623;
+  --secondary-foreground: #ecf4f0;
+  --muted: #172623;
+  --muted-foreground: #93a8a1;
+  --accent: #2dd4a7;
+  --accent-foreground: #04201a;
+  --destructive: #f2726f;
+  --destructive-foreground: #2a0807;
+  --success: #4ade9e;
+  --success-foreground: #04201a;
+  --warning: #f5b971;
+  --warning-foreground: #2a1a04;
+  --border: #21332f;
+  --input: #13211e;
+  --ring: #2dd4a7;
 }
 
 @layer base {
@@ -86,10 +87,10 @@
 
 @layer utilities {
   .glow-primary {
-    box-shadow: 0 10px 40px -10px color-mix(in oklab, var(--primary) 50%, transparent);
+    box-shadow: 0 12px 36px -12px color-mix(in oklab, var(--primary) 65%, transparent);
   }
   .gradient-text {
-    background: linear-gradient(135deg, oklch(0.85 0.12 285), oklch(0.7 0.22 295));
+    background: linear-gradient(100deg, #7ff0d0, #2dd4a7 42%, #f5cf8e);
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
@@ -128,6 +129,19 @@
     mix-blend-mode: overlay;
   }
 
+  /* Slow aurora behind heroes */
+  @keyframes aurora-drift {
+    0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+    50% { transform: translate3d(6%, 8%, 0) scale(1.15); }
+  }
+  .aurora-a, .aurora-b, .aurora-c { position: absolute; border-radius: 9999px; filter: blur(110px); pointer-events: none; }
+  .aurora-a { background: #1fae8f; opacity: 0.28; animation: aurora-drift 18s ease-in-out infinite; }
+  .aurora-b { background: #1c8fa8; opacity: 0.22; animation: aurora-drift 24s ease-in-out infinite reverse; }
+  .aurora-c { background: #c79a4d; opacity: 0.13; animation: aurora-drift 30s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) {
+    .aurora-a, .aurora-b, .aurora-c { animation: none; }
+  }
+
   @keyframes floatY {
     0%, 100% { transform: translateY(0) translateX(0); }
     50% { transform: translateY(-30px) translateX(20px); }
@@ -154,6 +168,21 @@
     from { width: 0%; }
   }
   .animate-grow { animation: grow 1.2s cubic-bezier(.2,.7,.2,1) both; }
+
+  /* LoadingRing */
+  @keyframes ring-orbit { to { transform: rotate(360deg); } }
+  @keyframes ring-breathe {
+    0%, 100% { transform: scale(0.82); opacity: 0.55; }
+    50% { transform: scale(1.12); opacity: 1; }
+  }
+  .ring-orbit, .ring-orbit-reverse { transform-origin: 50% 50%; transform-box: view-box; }
+  .ring-orbit { animation: ring-orbit 1.5s cubic-bezier(.55,.15,.45,.85) infinite; }
+  .ring-orbit-reverse { animation: ring-orbit 3.2s linear infinite reverse; }
+  .ring-breathe { animation: ring-breathe 1.9s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) {
+    .ring-orbit { animation-duration: 6s; }
+    .ring-orbit-reverse, .ring-breathe { animation: none; }
+  }
 
   @keyframes marquee {
     from { transform: translateX(0); }

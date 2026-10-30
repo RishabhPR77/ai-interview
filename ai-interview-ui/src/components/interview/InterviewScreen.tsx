@@ -3,7 +3,8 @@ import {
   Circle, Loader2, CheckCircle2, Square, Video, RotateCcw, Send, LogOut,
   AlertOctagon, Maximize2, Minimize2, SkipForward, MicOff, Briefcase, Volume2, VolumeX,
 } from "lucide-react";
-import { submitAnswer, endInterview, skipQuestion, getInterviewState, type StartResponse, type ReportResponse } from "@/lib/interview-api";
+import { submitAnswer, skipQuestion, getInterviewState, type StartResponse } from "@/lib/interview-api";
+import { LoadingRing } from "@/components/LoadingRing";
 import { ApiError } from "@/lib/api";
 
   const SESSION_KEY = 'tejaskrit_session'
@@ -12,7 +13,7 @@ import { ApiError } from "@/lib/api";
     start: StartResponse;
     candidateName: string;
     jobTitle: string;
-    onComplete: (report: ReportResponse, endedEarly?: boolean) => void;
+    onComplete: (endedEarly?: boolean) => void;
     onError: (message: string) => void;
   }
 
@@ -24,19 +25,9 @@ import { ApiError } from "@/lib/api";
     { key: "cultural_fit", label: "Cultural Fit" },
   ];
 
-  const STEPS = [
-    "Compressing video...",
-    "Transcribing audio...",
-    "Analysing face & gaze...",
-    "Scoring answer...",
-  ];
-
   const PROCESSING_MESSAGES = [
-    "Taking your answer...",
-    "Transcribing what you said...",
-    "Analysing your expressions...",
-    "Scoring your response...",
-    "Getting your next question...",
+    "Listening to what you said...",
+    "Choosing your next question...",
   ];
 
   type RecState = 'idle' | 'recording' | 'review' | 'processing'
@@ -74,6 +65,7 @@ import { ApiError } from "@/lib/api";
     const MAX_RECORDING_SECONDS = 180; // 3 minutes hard cap
     const WARNING_AT_SECONDS = 150;    // 2:30 — show "30 seconds left" warning
     const [processingStep, setProcessingStep] = useState<number>(-1);
+    const [uploadShare, setUploadShare] = useState<number>(0);
     const [coverage, setCoverage] = useState<Record<string, number>>(() => {
       const init: Record<string, number> = {};
       CATEGORIES.forEach(c => (init[c.key] = 0));
@@ -326,13 +318,12 @@ import { ApiError } from "@/lib/api";
       endingEarlyRef.current = true;
       setEndingEarly(true);
       try {
-        const report = await endInterview(start.session_id);
         streamRef.current?.getTracks().forEach(t => t.stop());
         if (timerRef.current) window.clearInterval(timerRef.current);
         if (stepTimerRef.current) window.clearInterval(stepTimerRef.current);
         if (muteCheckRef.current) window.clearInterval(muteCheckRef.current);
         audioCtxRef.current?.close().catch(() => {});
-        onComplete(report, true);
+        onComplete(true);
       } catch (e: any) {
         endingEarlyRef.current = false;
         setEndingEarly(false);
@@ -403,7 +394,9 @@ import { ApiError } from "@/lib/api";
         blobType = mime;
       }
 
-      const rec = new MediaRecorder(streamRef.current, { mimeType: mime });
+      // The server analyses video at 640×480, so a modest bitrate loses nothing
+      // and keeps uploads quick on home connections.
+      const rec = new MediaRecorder(streamRef.current, { mimeType: mime, videoBitsPerSecond: 700_000, audioBitsPerSecond: 64_000 });
       rec.ondataavailable = (e) => e.data.size > 0 && chunksRef.current.push(e.data);
       rec.onstop = () => {
         // Ignore if this recorder was replaced by a re-record
@@ -490,8 +483,7 @@ import { ApiError } from "@/lib/api";
       try {
         const state = await getInterviewState(start.session_id);
         if (state.status === "complete") {
-          const report = await endInterview(start.session_id);
-          onComplete(report);
+          onComplete();
           return true;
         }
         applyNextQuestion(state);
@@ -506,19 +498,21 @@ import { ApiError } from "@/lib/api";
       setError(null);
       setRecState('processing');
       setProcessingStep(0);
-      stepTimerRef.current = window.setInterval(() => {
-        setProcessingStep(s => Math.min(s + 1, STEPS.length - 1));
-      }, 1200);
+      setUploadShare(0);
 
       try {
-        const res = await submitAnswer(start.session_id, currentQ.question_id, pendingBlob, !!cameraFailed);
+        const res = await submitAnswer(start.session_id, currentQ.question_id, pendingBlob, !!cameraFailed, share => {
+          setUploadShare(share);
+          if (share >= 1 && !stepTimerRef.current) {
+            stepTimerRef.current = window.setInterval(() => {
+              setProcessingStep(s => Math.min(s + 1, PROCESSING_MESSAGES.length - 1));
+            }, 1500);
+          }
+        });
         if (stepTimerRef.current) { window.clearInterval(stepTimerRef.current); stepTimerRef.current = null; }
-        setProcessingStep(STEPS.length);
-        await new Promise(r => setTimeout(r, 400));
 
         if (res.status === "complete") {
-          const report = await endInterview(start.session_id);
-          onComplete(report);
+          onComplete();
           return;
         }
 
@@ -549,8 +543,7 @@ import { ApiError } from "@/lib/api";
       try {
         const res = await skipQuestion(start.session_id, currentQ.question_id);
         if (res.status === "complete") {
-          const report = await endInterview(start.session_id);
-          onComplete(report);
+          onComplete();
           return;
         }
         applyNextQuestion(res);
@@ -568,15 +561,22 @@ import { ApiError } from "@/lib/api";
     const processing = recState === 'processing';
 
     return (
-      <div className="min-h-screen bg-app screen-enter">
+      <div className="h-[100dvh] flex flex-col overflow-hidden bg-app screen-enter">
 
         {/* Full-screen processing overlay */}
         {processing && (
-          <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/70 backdrop-blur-sm gap-6">
-            <Loader2 className="w-20 h-20 text-primary animate-spin" />
-            <p className="text-white text-lg font-medium tracking-wide">
-              {PROCESSING_MESSAGES[Math.min(processingStep, PROCESSING_MESSAGES.length - 1)]}
-            </p>
+          <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-app/85 backdrop-blur-md gap-7 px-6 text-center">
+            <LoadingRing size={128} progress={uploadShare < 1 ? Math.max(0.03, uploadShare) : undefined}>
+              {uploadShare < 1 && <span className="font-serif text-3xl">{Math.round(uploadShare * 100)}<span className="text-base text-muted-foreground">%</span></span>}
+            </LoadingRing>
+            <div>
+              <p className="font-serif text-2xl sm:text-3xl">
+                {uploadShare < 1 ? "Uploading your answer..." : PROCESSING_MESSAGES[Math.min(processingStep, PROCESSING_MESSAGES.length - 1)]}
+              </p>
+              <p className="mt-2 text-sm text-muted-foreground">
+                {uploadShare < 1 ? "Keep this page open for a moment." : "Your next question will be here in a moment."}
+              </p>
+            </div>
           </div>
         )}
 
@@ -600,7 +600,7 @@ import { ApiError } from "@/lib/api";
         )}
 
         {/* ── Tejaskrit platform header ─────────────────────────────── */}
-        <div className="border-b border-border bg-surface/80 backdrop-blur-xl sticky top-0 z-10">
+        <div className="shrink-0 border-b border-border bg-surface/80 backdrop-blur-xl z-10">
           <div className="max-w-7xl mx-auto px-4 h-14 flex items-center gap-3">
             {/* Logo */}
             <div className="flex items-center gap-2 shrink-0">
@@ -628,6 +628,19 @@ import { ApiError } from "@/lib/api";
               </span>
             </div>
 
+            {/* Topic coverage: one dot per category, filled once a question has covered it */}
+            <div className="hidden lg:flex items-center gap-1.5 shrink-0" aria-label="Topics covered">
+              {CATEGORIES.map(c => {
+                const ok = (coverage[c.key] ?? 0) > 0;
+                return (
+                  <span key={c.key} title={`${c.label}: ${coverage[c.key] ?? 0} question(s)`}
+                    className={`text-[10px] px-2 py-0.5 rounded-full border ${ok ? 'border-success/40 bg-success/15 text-success' : 'border-border text-muted-foreground'}`}>
+                    {c.label.split(' ')[0]}
+                  </span>
+                );
+              })}
+            </div>
+
             {/* Right: candidate name + fullscreen + end early */}
             <div className="flex items-center gap-2 shrink-0">
               <span className="text-xs text-muted-foreground truncate max-w-[140px] hidden xl:block">
@@ -651,252 +664,164 @@ import { ApiError } from "@/lib/api";
           </div>
         </div>
 
-        <div className="max-w-7xl mx-auto px-4 py-8 grid lg:grid-cols-[1fr_320px] gap-8">
-          <div className="space-y-6">
+        {/* Video-call stage: the camera fills the screen, the question floats on top, controls float at the bottom */}
+        <div className="flex-1 min-h-0 p-2 sm:p-4">
+          <div className="relative h-full w-full max-w-6xl mx-auto rounded-2xl sm:rounded-3xl overflow-hidden bg-black border border-border">
+            {!cameraFailed && (
+              <video
+                ref={videoRef}
+                muted
+                playsInline
+                className="absolute inset-0 w-full h-full object-cover"
+                style={{ transform: "scaleX(-1)" }}
+              />
+            )}
+            {cameraFailed && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-surface/60 text-center px-6">
+                <div className="w-16 h-16 rounded-full bg-warning/15 border border-warning/30 flex items-center justify-center">
+                  <MicOff className="w-8 h-8 text-warning" />
+                </div>
+                <p className="text-white font-medium">Audio-only mode</p>
+                <p className="text-xs text-muted-foreground max-w-xs">Camera unavailable. Your answers are recorded as audio only — video analysis is skipped.</p>
+              </div>
+            )}
+            {!streamRef.current && !error && !cameraFailed && (
+              <div className="absolute inset-0 flex items-center justify-center text-muted-foreground gap-2 text-sm">
+                <Loader2 className="w-5 h-5 animate-spin" /> Connecting camera…
+              </div>
+            )}
+
+            {/* Soft shading so the floating panels stay readable over any background */}
+            <div className="absolute inset-x-0 top-0 h-2/5 bg-gradient-to-b from-black/60 to-transparent pointer-events-none" />
+            <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-black/70 to-transparent pointer-events-none" />
+
             {/* Question card */}
-            <div className="bg-surface border border-border rounded-2xl p-6 md:p-8">
-              {currentQ.is_follow_up && (
-                <span className="inline-block text-xs font-medium px-2.5 py-1 rounded-full bg-warning/15 text-warning border border-warning/30 mb-4">
-                  Follow-up
-                </span>
-              )}
-              <h2 className="font-serif text-2xl md:text-4xl leading-snug">
-                {currentQ.question}
-              </h2>
-              {currentQ.category && (
-                <p className="mt-3 text-xs uppercase tracking-wider text-muted-foreground">
-                  {currentQ.category.replace(/_/g, " ")}
-                </p>
-              )}
-              {/* TTS controls */}
-              <div className="mt-4 flex items-center gap-2">
+            <div className="absolute top-3 inset-x-3 sm:top-5 sm:left-5 sm:right-auto sm:max-w-2xl max-h-[50%] overflow-y-auto [scrollbar-width:thin] [scrollbar-color:rgba(255,255,255,0.25)_transparent] rounded-2xl border border-white/10 bg-black/55 backdrop-blur-md p-4 sm:p-5 text-white">
+              <div className="flex items-center gap-2 flex-wrap mb-2 text-[11px] uppercase tracking-wider">
+                <span className="text-primary font-semibold">Question {qIndex} of {total}</span>
+                {currentQ.category && <span className="text-white/50">· {currentQ.category.replace(/_/g, " ")}</span>}
+                {currentQ.is_follow_up && (
+                  <span className="normal-case tracking-normal text-xs font-medium px-2 py-0.5 rounded-full bg-warning/20 text-warning border border-warning/30">Follow-up</span>
+                )}
+              </div>
+              <h2 className="font-serif text-lg sm:text-xl lg:text-2xl leading-snug">{currentQ.question}</h2>
+              <div className="mt-3 flex items-center gap-2 flex-wrap">
                 <button
                   onClick={() => isSpeaking ? stopSpeaking() : speakQuestion(currentQ.question)}
-                  className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-border bg-surface hover:bg-muted transition text-muted-foreground hover:text-foreground"
+                  className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-white/15 bg-white/5 hover:bg-white/10 transition text-white/80"
                   title={isSpeaking ? "Stop reading" : "Read question aloud"}
                 >
-                  {isSpeaking
-                    ? <><VolumeX className="w-3.5 h-3.5" /> Stop</>
-                    : <><Volume2 className="w-3.5 h-3.5" /> Read aloud</>
-                  }
+                  {isSpeaking ? <><VolumeX className="w-3.5 h-3.5" /> Stop</> : <><Volume2 className="w-3.5 h-3.5" /> Read aloud</>}
                 </button>
                 <button
                   onClick={() => { setTtsEnabled(v => !v); stopSpeaking(); }}
-                  className={`text-xs px-3 py-1.5 rounded-full border transition ${ttsEnabled ? "border-border text-muted-foreground hover:text-foreground" : "border-destructive/40 text-destructive bg-destructive/10"}`}
+                  className={`text-xs px-3 py-1.5 rounded-full border transition ${ttsEnabled ? "border-white/15 text-white/70 hover:bg-white/10" : "border-destructive/40 text-destructive bg-destructive/15"}`}
                   title={ttsEnabled ? "Auto-read is on - click to turn off" : "Auto-read is off - click to turn on"}
                 >
                   {ttsEnabled ? "Auto-read on" : "Auto-read off"}
                 </button>
               </div>
-
-              {/* Think-time countdown */}
               {thinkSecondsLeft !== null && recState === 'idle' && (
-                <div className="mt-4 flex items-center gap-3">
-                  <div className="flex-1 h-1.5 bg-secondary rounded-full overflow-hidden">
+                <div className="mt-3 flex items-center gap-3">
+                  <div className="flex-1 h-1 bg-white/10 rounded-full overflow-hidden">
                     <div
-                      className={`h-full transition-all duration-1000 ease-linear ${thinkSecondsLeft <= 5 ? 'bg-warning' : 'bg-primary/60'}`}
+                      className={`h-full transition-all duration-1000 ease-linear ${thinkSecondsLeft <= 5 ? 'bg-warning' : 'bg-primary'}`}
                       style={{ width: `${(thinkSecondsLeft / Math.max(1, THINK_SECONDS - ALERT_SECONDS)) * 100}%` }}
                     />
                   </div>
-                  <span className={`text-xs whitespace-nowrap ${thinkSecondsLeft <= 5 ? 'text-warning font-medium' : 'text-muted-foreground'}`}>
-                    Take a moment to think — recording starts automatically in {thinkSecondsLeft + ALERT_SECONDS}s
+                  <span className={`text-xs whitespace-nowrap ${thinkSecondsLeft <= 5 ? 'text-warning font-medium' : 'text-white/60'}`}>
+                    Recording starts in {thinkSecondsLeft + ALERT_SECONDS}s
                   </span>
                 </div>
               )}
             </div>
 
-            {/* Webcam */}
-            <div className="relative bg-black rounded-2xl overflow-hidden aspect-video border border-border">
-              {!cameraFailed && (
-                <video
-                  ref={videoRef}
-                  muted
-                  playsInline
-                  className="w-full h-full object-cover"
-                  style={{ transform: "scaleX(-1)" }}
-                />
-              )}
-              {cameraFailed && (
-                <div className="w-full h-full flex flex-col items-center justify-center gap-3 bg-surface/50">
-                  <div className="w-16 h-16 rounded-full bg-warning/15 border border-warning/30 flex items-center justify-center">
-                    <MicOff className="w-8 h-8 text-warning" />
-                  </div>
-                  <div className="text-center px-6">
-                    <p className="text-white font-medium">Audio-only mode</p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Camera unavailable. Your answers will be recorded as audio only — video analysis will be skipped.
-                    </p>
-                  </div>
-                  {recState === 'recording' && (
-                    <div className="flex items-center gap-2 mt-2">
-                      <Circle className="w-3 h-3 fill-destructive text-destructive animate-blink" />
-                      <span className="text-[11px] text-white/80">Recording audio… {mm}:{ss}</span>
-                    </div>
-                  )}
-                </div>
-              )}
-              {recState === 'recording' && !cameraFailed && (
-                <div className={`absolute top-4 left-4 flex items-center gap-2 backdrop-blur px-3 py-1.5 rounded-full ${timeWarning ? 'bg-warning/80' : 'bg-black/70'}`}>
-                  <Circle className="w-3 h-3 fill-destructive text-destructive animate-blink" />
-                  <span className="text-xs font-medium text-white">REC {mm}:{ss}</span>
+            {/* Bottom: status line + floating control bar */}
+            <div className="absolute inset-x-0 bottom-3 sm:bottom-5 px-3 flex flex-col items-center gap-2">
+              {mutedAlert && recState === 'recording' && (
+                <div className="flex items-center gap-2 text-xs font-semibold text-white bg-destructive/90 px-3 py-1.5 rounded-full animate-pulse">
+                  <MicOff className="w-3.5 h-3.5" /> Mic may be muted — no audio detected
                 </div>
               )}
               {recState === 'recording' && timeWarning && (
-                <div className="absolute top-4 right-4 flex items-center gap-2 bg-warning/90 backdrop-blur px-3 py-1.5 rounded-full">
-                  <span className="text-xs font-medium text-white">30s left — recording will auto-stop at 3:00</span>
-                </div>
+                <div className="text-xs font-medium text-white bg-warning/85 px-3 py-1.5 rounded-full">30s left — recording stops automatically at 3:00</div>
               )}
               {recState === 'review' && (
-                <div className="absolute top-4 left-4 flex items-center gap-2 bg-black/70 backdrop-blur px-3 py-1.5 rounded-full">
-                  <CheckCircle2 className="w-3 h-3 text-success" />
-                  <span className="text-xs font-medium text-white">Recording ready — review below</span>
+                <div className="text-xs sm:text-sm text-white/85 bg-black/55 backdrop-blur px-3 py-1.5 rounded-full text-center">
+                  <CheckCircle2 className="inline w-3.5 h-3.5 text-success -mt-0.5 mr-1" />
+                  Answer recorded — submit it{!reRecordUsed ? ", or re-record once" : ""}.
                 </div>
               )}
-              {!streamRef.current && !error && !cameraFailed && (
-                <div className="absolute inset-0 flex items-center justify-center text-muted-foreground gap-2">
-                  <Loader2 className="w-5 h-5 animate-spin" /> Connecting camera...
-                </div>
+              {error && (
+                <div className="text-xs sm:text-sm text-white bg-destructive/85 rounded-xl px-3 py-2 max-w-lg text-center">{error}</div>
               )}
 
-              {/* Auto-mute alert overlay */}
-              {mutedAlert && recState === 'recording' && (
-                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-destructive/90 backdrop-blur px-4 py-2 rounded-full shadow-lg animate-pulse">
-                  <MicOff className="w-4 h-4 text-white" />
-                  <span className="text-xs font-semibold text-white">Mic may be muted — no audio detected</span>
-                </div>
+              <div className="flex items-center gap-2 rounded-full border border-white/10 bg-black/60 backdrop-blur-md p-1.5 sm:p-2 shadow-2xl">
+                {recState === 'recording' && (
+                  <div className={`flex items-center gap-1.5 pl-2.5 pr-1 text-xs font-medium tabular-nums ${timeWarning ? 'text-warning' : 'text-white'}`}>
+                    <Circle className="w-2.5 h-2.5 fill-destructive text-destructive animate-blink" /> {mm}:{ss}
+                  </div>
+                )}
+
+                {recState === 'idle' && (
+                  <>
+                    <button
+                      onClick={startRec}
+                      className="flex items-center gap-2 bg-success hover:bg-success/90 text-success-foreground font-medium px-5 sm:px-6 py-2.5 sm:py-3 rounded-full transition"
+                    >
+                      <Video className="w-5 h-5" /> Start answering
+                    </button>
+                    {!skipUsed && !currentQ.is_follow_up && (
+                      <button
+                        onClick={() => setShowSkipModal(true)}
+                        disabled={skipping}
+                        className="flex items-center gap-1.5 text-white/80 hover:bg-white/10 font-medium px-4 py-2.5 sm:py-3 rounded-full transition text-sm disabled:opacity-50"
+                        title="Skip this question (1 use per interview)"
+                      >
+                        <SkipForward className="w-4 h-4" /> Skip
+                      </button>
+                    )}
+                  </>
+                )}
+
+                {recState === 'recording' && (
+                  <button
+                    onClick={stopRec}
+                    className="flex items-center gap-2 bg-destructive hover:bg-destructive/90 text-destructive-foreground font-medium px-5 sm:px-6 py-2.5 sm:py-3 rounded-full transition"
+                  >
+                    <Square className="w-4 h-4 fill-current" /> Stop
+                  </button>
+                )}
+
+                {recState === 'review' && (
+                  <>
+                    <button
+                      onClick={submitPending}
+                      className="flex items-center gap-2 bg-primary hover:bg-primary/90 text-primary-foreground font-medium px-5 sm:px-6 py-2.5 sm:py-3 rounded-full transition glow-primary"
+                    >
+                      <Send className="w-4 h-4" /> Submit answer
+                    </button>
+                    {!reRecordUsed && (
+                      <button
+                        onClick={doReRecord}
+                        className="flex items-center gap-1.5 text-white/85 hover:bg-white/10 font-medium px-4 py-2.5 sm:py-3 rounded-full transition text-sm"
+                        title="You can re-record once per question"
+                      >
+                        <RotateCcw className="w-4 h-4" /> Re-record
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {(recState === 'idle' || recState === 'review') && (
+                <p className="text-[11px] text-white/45 hidden sm:block">
+                  {recState === 'idle' && <>Press <kbd className="px-1.5 py-0.5 rounded border border-white/15 bg-white/5 font-mono text-[10px]">Space</kbd> to start</>}
+                  {recState === 'review' && <>Press <kbd className="px-1.5 py-0.5 rounded border border-white/15 bg-white/5 font-mono text-[10px]">Enter</kbd> to submit</>}
+                </p>
               )}
             </div>
-
-            {/* Controls */}
-            <div className="flex flex-wrap gap-3">
-              {recState === 'idle' && (
-                <>
-                  <button
-                    onClick={startRec}
-                    className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-success hover:bg-success/90 text-success-foreground font-medium px-6 py-3 rounded-lg transition"
-                  >
-                    <Video className="w-5 h-5" /> Start Recording
-                  </button>
-                  {!skipUsed && !currentQ.is_follow_up && (
-                    <button
-                      onClick={() => setShowSkipModal(true)}
-                      disabled={skipping}
-                      className="flex items-center justify-center gap-2 bg-surface hover:bg-secondary border border-border text-muted-foreground font-medium px-4 py-3 rounded-lg transition text-sm disabled:opacity-50"
-                      title="Skip this question (1 use per interview)"
-                    >
-                      <SkipForward className="w-4 h-4" /> Skip
-                      <span className="text-xs opacity-60 ml-0.5">(1 use)</span>
-                    </button>
-                  )}
-                </>
-              )}
-
-              {recState === 'recording' && (
-                <button
-                  onClick={stopRec}
-                  className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-destructive hover:bg-destructive/90 text-destructive-foreground font-medium px-6 py-3 rounded-lg transition"
-                >
-                  <Square className="w-5 h-5 fill-current" /> Stop Recording
-                </button>
-              )}
-
-              {recState === 'review' && (
-                <>
-                  <button
-                    onClick={submitPending}
-                    className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-primary hover:bg-primary/90 text-primary-foreground font-medium px-6 py-3 rounded-lg transition glow-primary"
-                  >
-                    <Send className="w-4 h-4" /> Submit Answer
-                  </button>
-                  {!reRecordUsed && (
-                    <button
-                      onClick={doReRecord}
-                      className="flex items-center justify-center gap-2 bg-surface hover:bg-secondary border border-border text-foreground font-medium px-5 py-3 rounded-lg transition"
-                      title="You can re-record once per question"
-                    >
-                      <RotateCcw className="w-4 h-4" /> Re-record
-                      <span className="text-xs text-muted-foreground ml-1">(1 use)</span>
-                    </button>
-                  )}
-                </>
-              )}
-            </div>
-
-            {/* Keyboard shortcut hint */}
-            {(recState === 'idle' || recState === 'review') && (
-              <p className="text-xs text-muted-foreground/60 text-center">
-                {recState === 'idle' && <>Press <kbd className="px-1.5 py-0.5 rounded border border-border bg-secondary font-mono text-[10px]">Space</kbd> to start recording</>}
-                {recState === 'review' && <>Press <kbd className="px-1.5 py-0.5 rounded border border-border bg-secondary font-mono text-[10px]">Enter</kbd> to submit answer</>}
-              </p>
-            )}
-
-            {/* Review hint */}
-            {recState === 'review' && (
-              <div className="bg-primary/10 border border-primary/30 rounded-xl px-4 py-3 text-sm text-foreground/80">
-                <strong className="text-foreground">Review your answer.</strong> Happy with it? Hit <em>Submit Answer</em>.
-                {!reRecordUsed && " Not happy? You can re-record once."}
-                {reRecordUsed && " Re-record already used for this question."}
-              </div>
-            )}
-
-            {error && (
-              <div className="text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-lg px-4 py-3">
-                {error}
-              </div>
-            )}
-
           </div>
-
-          {/* Sidebar */}
-          <aside className="space-y-4">
-            <div className="bg-surface border border-border rounded-2xl p-5">
-              <div className="text-xs uppercase tracking-wider text-muted-foreground mb-1">Candidate</div>
-              <div className="font-medium">{candidateName}</div>
-              <div className="text-sm text-muted-foreground mt-0.5">{jobTitle}</div>
-              <div className="mt-4 pt-4 border-t border-border">
-                <button
-                  onClick={() => setShowEndModal(true)}
-                  disabled={processing || endingEarly}
-                  className="w-full flex items-center justify-center gap-2 text-xs px-3 py-2.5 rounded-lg border border-destructive/40 text-destructive hover:bg-destructive/10 transition disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  <LogOut className="w-3.5 h-3.5" /> End Interview Early
-                </button>
-              </div>
-            </div>
-            <div className="bg-surface border border-border rounded-2xl p-5">
-              <h3 className="text-sm font-medium mb-4">Topic Coverage</h3>
-              <ul className="space-y-2.5">
-                {CATEGORIES.map(c => {
-                  const count = coverage[c.key] ?? 0;
-                  const ok = count > 0;
-                  return (
-                    <li key={c.key} className="flex items-center justify-between text-sm">
-                      <span className="text-muted-foreground">{c.label}</span>
-                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium border ${
-                        ok
-                          ? "bg-success/15 text-success border-success/30"
-                          : "bg-destructive/10 text-destructive border-destructive/30"
-                      }`}>
-                        {count}
-                      </span>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-            <div className="bg-surface border border-border rounded-2xl p-5">
-              <h3 className="text-sm font-medium mb-2">Tips</h3>
-              <ul className="space-y-1.5 text-xs text-muted-foreground">
-                <li>👁 Look directly at the camera lens</li>
-                <li>⏸ Pause instead of saying "um" or "like"</li>
-                <li>📌 Use specific examples from your experience</li>
-                <li>⏱ Aim for 60–120 seconds per answer</li>
-                <li className="text-muted-foreground/50 pt-1 border-t border-border">
-                  <kbd className="font-mono">Space</kbd> = record · <kbd className="font-mono">Enter</kbd> = submit
-                </li>
-              </ul>
-            </div>
-          </aside>
         </div>
 
         {/* Skip Confirmation Modal */}

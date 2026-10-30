@@ -1,13 +1,15 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { SetupScreen } from './components/interview/SetupScreen'
 import { CameraCheckScreen } from './components/interview/CameraCheckScreen'
 import { PreInterviewScreen } from './components/interview/PreInterviewScreen'
 import { InterviewScreen } from './components/interview/InterviewScreen'
 import { ReportScreen } from './components/interview/ReportScreen'
-import { endInterview, getInterviewState, getReport, type StartResponse, type ReportResponse } from './lib/interview-api'
+import { ReportPreparingScreen } from './components/interview/ReportPreparingScreen'
+import { getInterviewState, type StartResponse, type ReportResponse } from './lib/interview-api'
 import { ApiError } from './lib/api'
+import { navigate } from './lib/router'
 
-type Screen = 'setup' | 'camera-check' | 'pre-interview' | 'interview' | 'report'
+type Screen = 'setup' | 'camera-check' | 'pre-interview' | 'interview' | 'preparing' | 'report'
 
 const SESSION_KEY = 'tejaskrit_session'
 // Finished reports are kept server-side for 24h; this remembers the latest one.
@@ -54,8 +56,15 @@ const DEFAULT_RUBRIC = {
   cultural_fit: 10,
 }
 
+/** The report opened from an email link: /app?report=<session id> */
+const linkedReport = () => new URLSearchParams(window.location.search).get('report')
+
 export function InterviewApp() {
-  const [screen, setScreen] = useState<Screen>('setup')
+  const [screen, setScreen] = useState<Screen>(() => (linkedReport() ? 'preparing' : 'setup'))
+  const [preparing, setPreparing] = useState<{ sessionId: string; finish: boolean } | null>(() => {
+    const id = linkedReport()
+    return id ? { sessionId: id, finish: false } : null
+  })
   const [startData, setStartData] = useState<StartResponse | null>(null)
   const [ctx, setCtx] = useState<{ candidateName: string; jobTitle: string }>({ candidateName: '', jobTitle: '' })
   const [report, setReport] = useState<ReportResponse | null>(null)
@@ -81,25 +90,42 @@ export function InterviewApp() {
     setScreen('camera-check')
   }
 
-  const showReport = (r: ReportResponse) => {
+  const rememberReport = useCallback((pointer: LastReport) => {
+    try { localStorage.setItem(LAST_REPORT_KEY, JSON.stringify(pointer)) } catch { /* storage unavailable */ }
+    setLastReport(pointer)
+  }, [])
+
+  const showReport = useCallback((r: ReportResponse) => {
     setCtx({ candidateName: r.candidate_name, jobTitle: r.job_title })
     setReport(r)
-    setEndedEarly(false)
+    if (r.session_id && r.report_expires_at) {
+      rememberReport({ session_id: r.session_id, candidateName: r.candidate_name, jobTitle: r.job_title, expires_at: r.report_expires_at })
+    }
     setScreen('report')
+  }, [rememberReport])
+
+  const openLastReport = () => {
+    if (!lastReport) return
+    setPreparing({ sessionId: lastReport.session_id, finish: false })
+    setScreen('preparing')
   }
 
-  const openLastReport = async () => {
-    if (!lastReport) return
-    setOpening(true)
-    try {
-      showReport(await getReport(lastReport.session_id))
-    } catch {
-      localStorage.removeItem(LAST_REPORT_KEY)
-      setLastReport(null)
-      setError('That report has expired.')
-    } finally {
-      setOpening(false)
-    }
+  const handleReportMissing = useCallback(() => {
+    localStorage.removeItem(LAST_REPORT_KEY)
+    setLastReport(null)
+    setPreparing(null)
+    setError('That report has expired or isn’t available.')
+    navigate('/app', { replace: true })
+    setScreen('setup')
+  }, [])
+
+  /** The interview is over: leave for the screen that waits for the report. */
+  const startPreparing = (sessionId: string, candidateName: string, jobTitle: string) => {
+    localStorage.removeItem(SESSION_KEY)
+    setSavedSession(null)
+    setPreparing({ sessionId, finish: true })
+    rememberReport({ session_id: sessionId, candidateName, jobTitle, expires_at: new Date(Date.now() + 24 * 3600 * 1000).toISOString() })
+    setScreen('preparing')
   }
 
   const handleResume = async (saved: SavedSession) => {
@@ -111,20 +137,15 @@ export function InterviewApp() {
     try {
       state = await getInterviewState(saved.session_id)
       if (state.status === 'complete') {
-        showReport(await endInterview(saved.session_id))
-        localStorage.removeItem(SESSION_KEY)
-        setSavedSession(null)
+        startPreparing(saved.session_id, saved.candidateName, saved.jobTitle)
         return
       }
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) {
         localStorage.removeItem(SESSION_KEY)
         setSavedSession(null)
-        try {
-          showReport(await getReport(saved.session_id))
-        } catch {
-          setError('That interview is no longer available.')
-        }
+        setPreparing({ sessionId: saved.session_id, finish: false })
+        setScreen('preparing')
         return
       }
       // Network trouble: fall back to what this browser saved.
@@ -152,19 +173,10 @@ export function InterviewApp() {
     setSavedSession(null)
   }
 
-  const handleComplete = (r: ReportResponse, early?: boolean) => {
+  const handleComplete = (early?: boolean) => {
     document.exitFullscreen?.().catch(() => { })
-    localStorage.removeItem(SESSION_KEY)
-    if (r.session_id && r.report_expires_at) {
-      const pointer: LastReport = {
-        session_id: r.session_id, candidateName: r.candidate_name, jobTitle: r.job_title, expires_at: r.report_expires_at,
-      }
-      try { localStorage.setItem(LAST_REPORT_KEY, JSON.stringify(pointer)) } catch { /* storage unavailable */ }
-      setLastReport(pointer)
-    }
-    setReport(r)
     setEndedEarly(!!early)
-    setScreen('report')
+    if (startData) startPreparing(startData.session_id, ctx.candidateName, ctx.jobTitle)
   }
 
   const handleError = (msg: string) => setError(msg)
@@ -172,9 +184,11 @@ export function InterviewApp() {
   const handleRestart = () => {
     setStartData(null)
     setReport(null)
+    setPreparing(null)
     setError(null)
     setEndedEarly(false)
     localStorage.removeItem(SESSION_KEY)
+    navigate('/app', { replace: true })
     setScreen('setup')
   }
 
@@ -259,6 +273,16 @@ export function InterviewApp() {
           jobTitle={ctx.jobTitle}
           onComplete={handleComplete}
           onError={handleError}
+        />
+      )}
+
+      {screen === 'preparing' && preparing && (
+        <ReportPreparingScreen
+          sessionId={preparing.sessionId}
+          finish={preparing.finish}
+          onReady={showReport}
+          onMissing={handleReportMissing}
+          onRestart={handleRestart}
         />
       )}
 

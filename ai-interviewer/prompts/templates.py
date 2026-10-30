@@ -71,20 +71,22 @@ Return ONLY valid JSON, no extra text:
 }}
 """
 
-ADAPTIVE_FOLLOWUP_PROMPT = """
-You are a senior interviewer. The candidate just answered a question but their answer was {quality}.
+ANSWER_TRIAGE_PROMPT = """
+You are a senior interviewer for a {job_title} role ({difficulty} level), deciding in a moment
+how to continue the interview. Detailed scoring happens later, so be quick and decisive.
 
-Original question: {question}
-Candidate answer: {answer}
-What was weak/missing: {gap}
+Question: {question}
+Candidate's spoken answer (transcript): {answer}
 
-Generate ONE sharp follow-up question that probes exactly the gap identified.
-If the answer was suspiciously perfect or rehearsed, generate a curveball variant to test real understanding.
+Rate the answer's substance from 0 to 10. If it is vague, misses the point of the question or
+sounds rehearsed, ask ONE sharp follow-up that probes exactly what was missing.
+If the answer is solid, do not ask a follow-up.
 
 Return ONLY valid JSON:
 {{
-  "follow_up_question": "...",
-  "reason": "why this follow-up was chosen"
+  "content_score": 0,
+  "follow_up_needed": false,
+  "follow_up_question": null
 }}
 """
 

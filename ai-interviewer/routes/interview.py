@@ -1,12 +1,15 @@
+import ctypes
+import gc
 import logging
 import os
 import subprocess
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, Depends, Request, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -35,8 +38,11 @@ from core.config import (
     ANALYSIS_WORKERS, ANSWER_JOB_TIMEOUT_SECONDS, MAX_ANSWER_SECONDS, MAX_INTERVIEWS_PER_DAY,
     MAX_UPLOAD_MB, REPORT_RETENTION_HOURS,
 )
-from core.db import InterviewReport, InterviewSession, UsageEvent, User, as_utc, get_db, utcnow
+from core.db import (
+    InterviewReport, InterviewSession, SessionLocal, UsageEvent, User, as_utc, get_db, utcnow,
+)
 from core.deps import current_user
+from core.email import EmailError, send_report_ready_email
 from analysis import audio_analyzer, video_analyzer
 from analysis.errors import AnalysisError
 
@@ -46,9 +52,32 @@ log = logging.getLogger("tejaskrit.interview")
 # FastAPI runs blocking work in its threadpool instead of the event loop.
 router = APIRouter(dependencies=[Depends(current_user)])
 
-# Answer analysis (ffmpeg + transcription + MediaPipe + scoring) takes far longer
-# than proxies allow for one HTTP request, so it runs here and the client polls.
-_executor = ThreadPoolExecutor(max_workers=ANALYSIS_WORKERS, thread_name_prefix="answer")
+# An answer is handled in two stages so candidates aren't kept waiting:
+#  1. quick (seconds, the client polls): transcribe, decide on a follow-up, choose the next question
+#  2. background: video analysis and full scoring, queued one after another. Its
+#     state lives in the session, so a server restart picks up where it left off.
+# When the interview has ended and the queue has drained, the report is generated
+# and the candidate is emailed if they're no longer watching the page.
+_quick_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="answer")
+
+
+def _lower_priority() -> None:
+    """Background analysis must never slow down a live interview on this server."""
+    try:
+        os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 10)
+    except (AttributeError, OSError):
+        pass  # not available on Windows
+
+
+_analysis_executor = ThreadPoolExecutor(
+    max_workers=ANALYSIS_WORKERS, thread_name_prefix="analysis", initializer=_lower_priority,
+)
+# Seconds between sampled video frames. Answers run up to 4 minutes, and background
+# analysis takes roughly this long per frame on a small server.
+VIDEO_SAMPLE_SECONDS = 1.0
+# A client that polled this recently is watching the page, so needs no email.
+WATCHING_SECONDS = 20
+_report_watchers: dict[str, float] = {}
 
 
 class SeniorityRequest(BaseModel):
@@ -300,6 +329,7 @@ def interview_state(session_id: str, user: User = Depends(current_user)):
 
 @router.post("/interview/answer", status_code=202)
 def submit_answer(
+    request: Request,
     session_id: str = Form(...),
     question_id: int = Form(...),
     video: UploadFile = File(...),
@@ -318,7 +348,9 @@ def submit_answer(
             "message": "Another of your interviews is still analysing an answer. Please wait for it to finish.",
         })
 
-    tmp_path = _save_upload(video)
+    tmp_path = _save_upload(video, session_id)
+    log.info("answer upload: %.1f MB in %.1fs", os.path.getsize(tmp_path) / 1e6,
+             time.monotonic() - request.state.started_at)
     duration = _probe_duration(tmp_path)
     if duration is not None and duration > MAX_ANSWER_SECONDS + 5:
         _unlink(tmp_path)
@@ -338,7 +370,7 @@ def submit_answer(
         _unlink(tmp_path)
         raise
 
-    _executor.submit(_run_answer_job, session_id, question_id, tmp_path, is_audio_only, ai_config)
+    _quick_executor.submit(_run_answer_job, session_id, question_id, tmp_path, is_audio_only, ai_config)
     return {"status": "processing", "question_id": question_id}
 
 
@@ -362,8 +394,73 @@ def answer_status(session_id: str, question_id: int, user: User = Depends(curren
     return _state_payload(session)
 
 
+def _pending(entry: dict) -> bool:
+    return (entry.get("analysis") or {}).get("state") == "pending"
+
+
+def _triage(session: dict, question: dict, transcript: str) -> dict:
+    """Quick read of the answer. Failing here must not hold up the interview:
+    the answer is still scored in full later, just without a follow-up."""
+    try:
+        result = llm_client.triage_answer(
+            job_title=session["meta"]["job_title"],
+            difficulty=session["meta"]["difficulty"],
+            question=question["text"],
+            answer=transcript,
+        )
+    except llm.AIError as e:
+        log.warning("answer triage failed, continuing without a follow-up: %s", e.message)
+        return {"content_score": 5, "follow_up_needed": False, "follow_up_question": None}
+    score = result.get("content_score")
+    return {
+        "content_score": score if isinstance(score, (int, float)) else 5,
+        "follow_up_needed": bool(result.get("follow_up_needed")),
+        "follow_up_question": result.get("follow_up_question") or None,
+    }
+
+
+def _quick_entry(session: dict, question: dict, audio_signals: dict, is_audio_only: bool,
+                 recording: str) -> tuple[dict, str | None]:
+    """The conversation entry for a just-received answer, plus any follow-up.
+    Scores are a first estimate until background analysis replaces them."""
+    if audio_signals["is_silent"]:
+        video = _empty_video_signals_audio_only("no spoken answer was detected")
+        entry = scoring_engine.score_single_answer(session, question, audio_signals, video)
+        entry["category"] = question.get("category", "general")
+        return entry, None
+
+    triage = _triage(session, question, audio_signals["transcript"])
+    score = triage["content_score"]
+    return {
+        "question_id": question["id"],
+        "question_text": question["text"],
+        "answer_text": audio_signals["transcript"],
+        "primary_category": question.get("category", ""),
+        "category": question.get("category", "general"),
+        "is_intro": question.get("is_intro", False),
+        "is_follow_up": question.get("is_follow_up", False),
+        "audio_signals": audio_signals,
+        "video_signals": _empty_video_signals_audio_only(
+            "audio-only answer — the camera was off" if is_audio_only else "video analysis didn't finish"
+        ),
+        "content_score": score,
+        "communication_score": score,
+        "confidence_score": score,
+        "per_rubric_scores": {},
+        "justification": "",
+        "anomaly_flagged": False,
+        "anomaly_reason": None,
+        "follow_up_triggered": triage["follow_up_needed"],
+        "audio_only_submission": is_audio_only,
+        "analysis": {"state": "pending", "recording": None if is_audio_only else recording},
+    }, (triage["follow_up_question"] if triage["follow_up_needed"] else None)
+
+
 def _run_answer_job(session_id: str, question_id: int, tmp_path: str, is_audio_only: bool,
                     ai_config: llm.AIConfig) -> None:
+    """Stage 1: everything needed to show the next question, and nothing more."""
+    audio_path = None
+    keep_recording = False
     try:
         with llm.use_config(ai_config):
             session = session_store.load(session_id)
@@ -372,33 +469,52 @@ def _run_answer_job(session_id: str, question_id: int, tmp_path: str, is_audio_o
             question = session.get("current_question")
             if not question or question["id"] != question_id:
                 return
-            scored_entry = _analyze_answer(session, question, tmp_path, is_audio_only)
+            audio_path = _extract_audio(tmp_path)
+            audio_signals = audio_analyzer.compute_audio_signals(audio_path)
+
+            # A silent recording is usually a muted mic: give one chance to redo it.
+            if audio_signals["is_silent"] and question_id not in session.get("silent_warned", []):
+                with session_store.lock(session_id):
+                    session = session_store.load(session_id)
+                    if session:
+                        session.setdefault("silent_warned", []).append(question_id)
+                        session_store.save(session)
+                raise AnalysisError(
+                    "We couldn't hear an answer in that recording. Check your microphone and "
+                    "record again, or submit once more to move on."
+                )
+
+            entry, follow_up_text = _quick_entry(session, question, audio_signals, is_audio_only, tmp_path)
 
             with session_store.lock(session_id):
                 session = session_store.load(session_id)
                 job = (session or {}).get("answer_job") or {}
                 if job.get("question_id") != question_id or job.get("state") != "processing":
                     return  # timed out and superseded by a re-submission
-                session["conversation"].append(scored_entry)
+                session["conversation"].append(entry)
                 if not question.get("is_follow_up"):
                     session_store.increment_topic_coverage(session, question.get("category", ""))
-                session["last_quality"] = "weak" if scored_entry["content_score"] < 5 else "good"
-
-                follow_up_text = scored_entry.get("follow_up_question") if scored_entry.get("follow_up_triggered") else None
+                session["last_quality"] = "weak" if entry["content_score"] < 5 else "good"
                 result = _advance(session, question, follow_up_text=follow_up_text)
                 result["answer_received"] = {
-                    "content_score": scored_entry["content_score"],
-                    "anomaly_flagged": scored_entry["anomaly_flagged"],
+                    "content_score": entry["content_score"],
+                    "anomaly_flagged": entry["anomaly_flagged"],
                 }
                 session["answer_job"] = {**job, "state": "done", "result": _sanitize(result)}
                 session_store.save(session)
+
+        if _pending(entry):
+            keep_recording = not is_audio_only
+            _analysis_executor.submit(_run_analysis, session_id, question_id)
     except (llm.AIError, AnalysisError) as e:
         _fail_job(session_id, question_id, getattr(e, "message", None) or str(e))
     except Exception:
-        log.exception("answer analysis failed for session %s question %s", session_id, question_id)
-        _fail_job(session_id, question_id, "Something went wrong analysing your answer. Please submit it again.")
+        log.exception("processing failed for session %s question %s", session_id, question_id)
+        _fail_job(session_id, question_id, "Something went wrong processing your answer. Please submit it again.")
     finally:
-        _unlink(tmp_path)
+        _unlink(audio_path)
+        if not keep_recording:
+            _unlink(tmp_path)
 
 
 def _fail_job(session_id: str, question_id: int, message: str) -> None:
@@ -411,58 +527,130 @@ def _fail_job(session_id: str, question_id: int, message: str) -> None:
             session_store.save(session)
 
 
-def _analyze_answer(session: dict, question: dict, tmp_path: str, is_audio_only: bool) -> dict:
-    compressed_path = tmp_path
-    audio_path = tmp_path
+def _analyse_video(recording: str | None, fallback: dict) -> dict:
+    if not recording:
+        return fallback  # audio-only answer
+    if not os.path.exists(recording):
+        return _empty_video_signals_audio_only("the recording was no longer available")
+    compressed = _compress_video(recording)
     try:
-        if is_audio_only:
-            # Audio-only submission — skip video compression/analysis.
-            # Convert the raw audio (webm/ogg) to WAV so librosa can reliably
-            # decode it, then transcribe directly.
-            print(f"\n[0/2] Audio-only submission received — skipping video pipeline")
-            print(f"\n[1/2] Converting audio to WAV + transcribing...")
-            audio_path = _extract_audio(tmp_path)
-            audio_signals = audio_analyzer.compute_audio_signals(audio_path)
-            print(f"      Done. WPM: {audio_signals['words_per_minute']} | Fillers: {audio_signals['filler_word_count']}")
-            print(f"      Transcript: {audio_signals['transcript'][:100]}...")
-
-            print(f"[2/2] Scoring answer...")
-            # Video analysis unavailable in audio-only mode — set defaults
-            video_signals = _empty_video_signals_audio_only()
-            scored_entry = scoring_engine.score_single_answer(
-                session=session,
-                question=question,
-                audio_signals=audio_signals,
-                video_signals=video_signals,
-            )
-            scored_entry["audio_only_submission"] = True
-        else:
-            print(f"\n[0/4] Compressing video...")
-            compressed_path = _compress_video(tmp_path)
-
-            print(f"\n[1/4] Extracting audio from video...")
-            audio_path = _extract_audio(compressed_path)
-
-            print("[2/4] Transcribing...")
-            audio_signals = audio_analyzer.compute_audio_signals(audio_path)
-            print(f"      Done. WPM: {audio_signals['words_per_minute']} | Fillers: {audio_signals['filler_word_count']}")
-            print(f"      Transcript: {audio_signals['transcript'][:100]}...")
-
-            print("[3/4] Analyzing video with MediaPipe...")
-            video_signals = video_analyzer.analyze_video(compressed_path, sample_interval_seconds=0.5)
-            print(f"      Done. Eye contact: {video_signals['eye_contact_percentage']}% | Posture: {video_signals['posture_score']}")
-
-            print("[4/4] Scoring answer...")
-            scored_entry = scoring_engine.score_single_answer(
-                session=session,
-                question=question,
-                audio_signals=audio_signals,
-                video_signals=video_signals,
-            )
-        return scored_entry
+        return video_analyzer.analyze_video(compressed, sample_interval_seconds=VIDEO_SAMPLE_SECONDS)
     finally:
-        for path in {compressed_path, audio_path} - {tmp_path}:
-            _unlink(path)
+        if compressed != recording:
+            _unlink(compressed)
+
+
+def _release_memory() -> None:
+    """Video analysis leaves a lot of freed memory inside the allocator. Hand it back
+    so it doesn't push the app into swap, which slows the next candidate's answer."""
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass  # not glibc
+
+
+def _run_analysis(session_id: str, question_id: int) -> None:
+    """Stage 2: full video analysis and scoring of one answer."""
+    session = session_store.load(session_id)
+    if session is None:
+        return  # interview deleted; its recordings went with it
+    entry = next((e for e in session["conversation"] if e.get("question_id") == question_id), None)
+    if entry is None or not _pending(entry):
+        return
+    recording = entry["analysis"].get("recording")
+    question = next((q for q in session["question_bank"] if q["id"] == question_id), None) or {
+        "id": question_id, "text": entry["question_text"], "category": entry.get("category", "general"),
+    }
+
+    scored = None
+    try:
+        video_signals = _analyse_video(recording, entry["video_signals"])
+        with SessionLocal() as db:
+            config = load_ai_config(db, session["user_id"], need_stt=False)
+        with llm.use_config(config):
+            scored = scoring_engine.score_single_answer(session, question, entry["audio_signals"], video_signals)
+    except Exception:
+        # Never block the report on one answer: it keeps its first-estimate score.
+        log.exception("background analysis failed for session %s question %s", session_id, question_id)
+
+    with session_store.lock(session_id):
+        session = session_store.load(session_id)
+        current = next((e for e in (session or {}).get("conversation", []) if e.get("question_id") == question_id), None)
+        if current is not None:
+            if scored:
+                current.update(_sanitize(scored))
+            else:
+                current["analysis_incomplete"] = True
+                current["justification"] = "Detailed scoring wasn't available for this answer, so this is a first estimate."
+            current["analysis"] = {"state": "done" if scored else "failed"}
+            session_store.save(session)
+    _unlink(recording)
+    _release_memory()
+    _finish_report(session_id)
+
+
+def _finish_report(session_id: str) -> None:
+    """Once the interview has ended and every answer is analysed, build the report."""
+    with session_store.lock(session_id):
+        session = session_store.load(session_id)
+        if (not session or session.get("report_state") != "preparing"
+                or any(_pending(e) for e in session["conversation"])):
+            return
+        session["report_state"] = "generating"
+        session_store.save(session)
+
+    try:
+        with SessionLocal() as db:
+            config = load_ai_config(db, session["user_id"], need_stt=False)
+            user = db.get(User, session["user_id"])
+            email, name = user.email, user.name
+        with llm.use_config(config):
+            report = _sanitize(scoring_engine.generate_final_report(session))
+        expires_at = utcnow() + timedelta(hours=REPORT_RETENTION_HOURS)
+        report["report_expires_at"] = expires_at.isoformat()
+        with SessionLocal() as db:
+            db.merge(InterviewReport(id=session_id, user_id=session["user_id"], data=report, expires_at=expires_at))
+            db.commit()
+        session_store.delete_session(session_id)
+    except Exception as e:
+        log.exception("report generation failed for session %s", session_id)
+        with session_store.lock(session_id):
+            session = session_store.load(session_id)
+            if session:
+                session["report_state"] = "failed"
+                session["report_error"] = getattr(e, "message", None) or "We couldn't generate your report. Please try again."
+                session_store.save(session)
+        return
+
+    watched = time.time() - _report_watchers.pop(session_id, 0) < WATCHING_SECONDS
+    if not watched:
+        try:
+            send_report_ready_email(email, name, report["job_title"], session_id, REPORT_RETENTION_HOURS)
+        except EmailError:
+            log.exception("couldn't email the report link for session %s", session_id)
+
+
+def resume_background_work() -> None:
+    """Called at startup: pick up whatever a restart interrupted."""
+    with SessionLocal() as db:
+        session_ids = db.execute(select(InterviewSession.id)).scalars().all()
+    for session_id in session_ids:
+        with session_store.lock(session_id):
+            session = session_store.load(session_id)
+            if session is None:
+                continue
+            job = session.get("answer_job") or {}
+            if job.get("state") == "processing":
+                session["answer_job"] = {**job, "state": "error", "error": "The server restarted. Please submit your answer again."}
+            if session.get("report_state") == "generating":
+                session["report_state"] = "preparing"
+            session_store.save(session)
+        for entry in session["conversation"]:
+            if _pending(entry):
+                _analysis_executor.submit(_run_analysis, session_id, entry["question_id"])
+        if session.get("report_state") == "preparing":
+            _analysis_executor.submit(_finish_report, session_id)
 
 
 @router.post("/interview/{session_id}/skip")
@@ -536,18 +724,27 @@ def end_interview(
 
         if session["status"] != "complete":
             session_store.complete_session(session)
-            session_store.save(session)
+        if session.get("report_state") in (None, "failed"):
+            session["report_state"] = "preparing"
+            session.pop("report_error", None)
+        session_store.save(session)
+        progress = _report_progress(session)
 
-        with llm.use_config(load_ai_config(db, user.id, need_stt=False)):
-            report = _sanitize(scoring_engine.generate_final_report(session))
-        report["report_expires_at"] = (utcnow() + timedelta(hours=REPORT_RETENTION_HOURS)).isoformat()
-        db.merge(InterviewReport(
-            id=session_id, user_id=user.id, data=report,
-            expires_at=utcnow() + timedelta(hours=REPORT_RETENTION_HOURS),
-        ))
-        db.commit()
-        session_store.delete_session(session_id)
-    return JSONResponse(report)
+    _report_watchers[session_id] = time.time()
+    _analysis_executor.submit(_finish_report, session_id)
+    return JSONResponse(progress)
+
+
+def _report_progress(session: dict) -> dict:
+    analysed = [e for e in session["conversation"] if "analysis" in e]
+    if session.get("report_state") == "failed":
+        return {"status": "failed", "detail": session.get("report_error")}
+    return {
+        "status": "preparing",
+        "session_id": session["session_id"],
+        "analysed": sum(1 for e in analysed if not _pending(e)),
+        "total": len(analysed),
+    }
 
 
 def _stored_report(db: Session, session_id: str, user: User) -> dict | None:
@@ -555,6 +752,18 @@ def _stored_report(db: Session, session_id: str, user: User) -> dict | None:
     if row is None or row.user_id != user.id or as_utc(row.expires_at) < utcnow():
         return None
     return row.data
+
+
+@router.get("/interview/{session_id}/report-status")
+def report_status(session_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Is the report ready yet? Also tells us the candidate is still watching."""
+    if _stored_report(db, session_id, user) is not None:
+        return {"status": "ready"}
+    session = _owned_session(session_id, user)
+    if session["status"] != "complete" or not session.get("report_state"):
+        return {"status": "ongoing"}
+    _report_watchers[session_id] = time.time()
+    return _report_progress(session)
 
 
 @router.get("/interview/{session_id}/report")
@@ -566,12 +775,12 @@ def get_report(session_id: str, user: User = Depends(current_user), db: Session 
     return JSONResponse(report)
 
 
-def _save_upload(upload: UploadFile) -> str:
+def _save_upload(upload: UploadFile, session_id: str) -> str:
     suffix = os.path.splitext(upload.filename or "answer.mp4")[1] or ".mp4"
     if suffix.lower() not in (".webm", ".mp4", ".ogg", ".wav", ".m4a", ".mov"):
         suffix = ".webm"
     max_bytes = MAX_UPLOAD_MB * 1024 * 1024
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, dir=session_store.recordings_dir(session_id)) as tmp:
         tmp_path = tmp.name
         written = 0
         while chunk := upload.file.read(1024 * 1024):
@@ -632,8 +841,8 @@ def _compress_video(input_path: str) -> str:
     result = subprocess.run(
         [
             "ffmpeg", "-y", "-i", input_path, "-t", str(MAX_ANSWER_SECONDS),
-            "-vf", "scale=640:480", "-crf", "28", "-preset", "fast",
-            "-c:a", "aac", "-b:a", "64k",
+            # Only for frame sampling: low fps and no audio decode several times faster.
+            "-vf", "scale=640:480,fps=4", "-crf", "30", "-preset", "ultrafast", "-an",
             compressed_path, "-loglevel", "error"
         ],
         capture_output=True, text=True
@@ -647,8 +856,8 @@ def _compress_video(input_path: str) -> str:
     return compressed_path
 
 
-def _empty_video_signals_audio_only() -> dict:
-    """Default video signals for audio-only submissions (no video analysis)."""
+def _empty_video_signals_audio_only(reason: str = "audio-only answer — the camera was off") -> dict:
+    """Default video signals when no video analysis ran for an answer."""
     return {
         "eye_contact_percentage":  0.0,
         "avg_expression_score":    5.0,
@@ -677,5 +886,5 @@ def _empty_video_signals_audio_only() -> dict:
         "glasses_detected":        False,
         "audio_only":              True,
         "video_available":         False,
-        "unavailable_reason":      "audio-only answer — the camera was off",
+        "unavailable_reason":      reason,
     }
