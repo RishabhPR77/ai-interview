@@ -438,7 +438,7 @@ export function SettingsPage() {
 
   return (
     <div className="min-h-screen bg-app text-foreground">
-      <Toaster theme="dark" position="bottom-right" richColors />
+      <Toaster theme="light" position="bottom-right" richColors />
       <AppHeader />
       <main className="max-w-4xl mx-auto px-4 sm:px-6 py-10 sm:py-14 space-y-6">
         <div>

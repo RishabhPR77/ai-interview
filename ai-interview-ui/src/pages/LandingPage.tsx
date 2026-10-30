@@ -150,14 +150,14 @@ function HeroVisual() {
         </div>
 
         {/* video area */}
-        <div className="relative h-[calc(100%-44px)] bg-[radial-gradient(ellipse_at_50%_30%,oklch(0.26_0.05_285),oklch(0.14_0.02_280)_70%)]">
+        <div className="relative h-[calc(100%-44px)] bg-[radial-gradient(ellipse_at_50%_30%,#3a332b,#1a1814_70%)]">
           <div className="absolute inset-0 grid-bg opacity-40" />
           {/* silhouette */}
           <svg viewBox="0 0 200 160" className="absolute left-1/2 -translate-x-1/2 bottom-0 w-[80%] sm:w-[58%]" aria-hidden>
             <defs>
               <linearGradient id="sil" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0" stopColor="oklch(0.42 0.06 285)" />
-                <stop offset="1" stopColor="oklch(0.2 0.03 280)" />
+                <stop offset="0" stopColor="#5a5046" />
+                <stop offset="1" stopColor="#2a251f" />
               </linearGradient>
             </defs>
             <ellipse cx="100" cy="62" rx="30" ry="36" fill="url(#sil)" />
@@ -288,7 +288,7 @@ function ReportPreview() {
             </div>
             <div className="h-1.5 rounded-full bg-secondary overflow-hidden">
               <motion.div
-                className="h-full rounded-full bg-gradient-to-r from-primary to-[oklch(0.72_0.18_300)]"
+                className="h-full rounded-full bg-gradient-to-r from-primary to-[#b8361a]"
                 initial={{ width: 0 }} whileInView={{ width: `${score * 10}%` }} viewport={{ once: true }}
                 transition={{ duration: 1.1, delay: 0.1 * i, ease: [0.2, 0.7, 0.2, 1] }}
               />
@@ -323,7 +323,7 @@ export function LandingPage() {
       {/* HERO */}
       <div className="relative">
         <div className="absolute inset-0 grid-bg opacity-60 pointer-events-none" />
-        <div className="absolute -top-40 left-1/2 -translate-x-1/2 w-[900px] h-[600px] rounded-full bg-primary/20 blur-[120px] pointer-events-none" />
+        <div className="absolute -top-40 left-1/2 -translate-x-1/2 w-[900px] h-[600px] rounded-full bg-primary/12 blur-[120px] pointer-events-none" />
         <div className="absolute inset-0 noise-overlay pointer-events-none" />
 
         <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-10 pt-32 sm:pt-36 pb-20 lg:pb-28 grid lg:grid-cols-[1.05fr_1fr] gap-14 lg:gap-10 items-center">

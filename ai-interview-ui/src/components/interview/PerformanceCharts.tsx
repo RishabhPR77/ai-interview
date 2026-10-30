@@ -1,16 +1,16 @@
 import type { QuestionScore } from "@/lib/interview-api";
 
 const DARK = {
-  grid: "#2a2a3a",
-  axis: "#3a3a50",
-  text: "#8888aa",
-  fill: "rgba(139,92,246,0.15)",
-  stroke: "#8b5cf6",
-  green: "#22c55e",
-  yellow: "#f59e0b",
-  red: "#ef4444",
-  blue: "#3b82f6",
-  muted: "#555570",
+  grid: "#e3dacb",
+  axis: "#cfc4b2",
+  text: "#6b6458",
+  fill: "rgba(228,87,46,0.14)",
+  stroke: "#e4572e",
+  green: "#2f7d4f",
+  yellow: "#c98516",
+  red: "#c42f2f",
+  blue: "#2f5d8a",
+  muted: "#a39a8b",
 };
 
 function scoreToColor(v: number, max = 10): string {
@@ -268,7 +268,7 @@ function BarChart({ title, questions, getValue, getColor, maxValue, yLabel, norm
               y={padT + chartH - (normalZone[1] / maxValue) * chartH}
               width={chartW}
               height={((normalZone[1] - normalZone[0]) / maxValue) * chartH}
-              fill="rgba(34,197,94,0.07)"
+              fill="rgba(47,125,79,0.08)"
             />
           )}
 
