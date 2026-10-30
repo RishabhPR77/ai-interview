@@ -568,7 +568,7 @@ import { ApiError } from "@/lib/api";
     const processing = recState === 'processing';
 
     return (
-      <div className="min-h-screen bg-app screen-enter">
+      <div className="h-[100dvh] flex flex-col overflow-hidden bg-app screen-enter">
 
         {/* Full-screen processing overlay */}
         {processing && (
@@ -600,7 +600,7 @@ import { ApiError } from "@/lib/api";
         )}
 
         {/* ── Tejaskrit platform header ─────────────────────────────── */}
-        <div className="border-b border-border bg-surface/80 backdrop-blur-xl sticky top-0 z-10">
+        <div className="shrink-0 border-b border-border bg-surface/80 backdrop-blur-xl z-10">
           <div className="max-w-7xl mx-auto px-4 h-14 flex items-center gap-3">
             {/* Logo */}
             <div className="flex items-center gap-2 shrink-0">
@@ -651,16 +651,16 @@ import { ApiError } from "@/lib/api";
           </div>
         </div>
 
-        <div className="max-w-7xl mx-auto px-4 py-8 grid lg:grid-cols-[1fr_320px] gap-8">
-          <div className="space-y-6">
-            {/* Question card */}
-            <div className="bg-surface border border-border rounded-2xl p-6 md:p-8">
+        {/* Question area: fills the space between the header and the dock; scrolls only if the question is very long */}
+        <div className="flex-1 min-h-0 max-w-7xl w-full mx-auto px-4 py-4 sm:py-6 grid lg:grid-cols-[1fr_300px] gap-6">
+          <div className="min-h-0 overflow-y-auto flex flex-col">
+            <div className="my-auto bg-surface border border-border rounded-2xl p-5 sm:p-6 md:p-8">
               {currentQ.is_follow_up && (
                 <span className="inline-block text-xs font-medium px-2.5 py-1 rounded-full bg-warning/15 text-warning border border-warning/30 mb-4">
                   Follow-up
                 </span>
               )}
-              <h2 className="font-serif text-2xl md:text-4xl leading-snug">
+              <h2 className="font-serif text-xl sm:text-2xl md:text-4xl leading-snug">
                 {currentQ.question}
               </h2>
               {currentQ.category && (
@@ -699,169 +699,19 @@ import { ApiError } from "@/lib/api";
                     />
                   </div>
                   <span className={`text-xs whitespace-nowrap ${thinkSecondsLeft <= 5 ? 'text-warning font-medium' : 'text-muted-foreground'}`}>
-                    Take a moment to think — recording starts automatically in {thinkSecondsLeft + ALERT_SECONDS}s
+                    Recording starts in {thinkSecondsLeft + ALERT_SECONDS}s
                   </span>
                 </div>
               )}
             </div>
-
-            {/* Webcam */}
-            <div className="relative bg-black rounded-2xl overflow-hidden aspect-video border border-border">
-              {!cameraFailed && (
-                <video
-                  ref={videoRef}
-                  muted
-                  playsInline
-                  className="w-full h-full object-cover"
-                  style={{ transform: "scaleX(-1)" }}
-                />
-              )}
-              {cameraFailed && (
-                <div className="w-full h-full flex flex-col items-center justify-center gap-3 bg-surface/50">
-                  <div className="w-16 h-16 rounded-full bg-warning/15 border border-warning/30 flex items-center justify-center">
-                    <MicOff className="w-8 h-8 text-warning" />
-                  </div>
-                  <div className="text-center px-6">
-                    <p className="text-white font-medium">Audio-only mode</p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Camera unavailable. Your answers will be recorded as audio only — video analysis will be skipped.
-                    </p>
-                  </div>
-                  {recState === 'recording' && (
-                    <div className="flex items-center gap-2 mt-2">
-                      <Circle className="w-3 h-3 fill-destructive text-destructive animate-blink" />
-                      <span className="text-[11px] text-white/80">Recording audio… {mm}:{ss}</span>
-                    </div>
-                  )}
-                </div>
-              )}
-              {recState === 'recording' && !cameraFailed && (
-                <div className={`absolute top-4 left-4 flex items-center gap-2 backdrop-blur px-3 py-1.5 rounded-full ${timeWarning ? 'bg-warning/80' : 'bg-black/70'}`}>
-                  <Circle className="w-3 h-3 fill-destructive text-destructive animate-blink" />
-                  <span className="text-xs font-medium text-white">REC {mm}:{ss}</span>
-                </div>
-              )}
-              {recState === 'recording' && timeWarning && (
-                <div className="absolute top-4 right-4 flex items-center gap-2 bg-warning/90 backdrop-blur px-3 py-1.5 rounded-full">
-                  <span className="text-xs font-medium text-white">30s left — recording will auto-stop at 3:00</span>
-                </div>
-              )}
-              {recState === 'review' && (
-                <div className="absolute top-4 left-4 flex items-center gap-2 bg-black/70 backdrop-blur px-3 py-1.5 rounded-full">
-                  <CheckCircle2 className="w-3 h-3 text-success" />
-                  <span className="text-xs font-medium text-white">Recording ready — review below</span>
-                </div>
-              )}
-              {!streamRef.current && !error && !cameraFailed && (
-                <div className="absolute inset-0 flex items-center justify-center text-muted-foreground gap-2">
-                  <Loader2 className="w-5 h-5 animate-spin" /> Connecting camera...
-                </div>
-              )}
-
-              {/* Auto-mute alert overlay */}
-              {mutedAlert && recState === 'recording' && (
-                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-destructive/90 backdrop-blur px-4 py-2 rounded-full shadow-lg animate-pulse">
-                  <MicOff className="w-4 h-4 text-white" />
-                  <span className="text-xs font-semibold text-white">Mic may be muted — no audio detected</span>
-                </div>
-              )}
-            </div>
-
-            {/* Controls */}
-            <div className="flex flex-wrap gap-3">
-              {recState === 'idle' && (
-                <>
-                  <button
-                    onClick={startRec}
-                    className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-success hover:bg-success/90 text-success-foreground font-medium px-6 py-3 rounded-lg transition"
-                  >
-                    <Video className="w-5 h-5" /> Start Recording
-                  </button>
-                  {!skipUsed && !currentQ.is_follow_up && (
-                    <button
-                      onClick={() => setShowSkipModal(true)}
-                      disabled={skipping}
-                      className="flex items-center justify-center gap-2 bg-surface hover:bg-secondary border border-border text-muted-foreground font-medium px-4 py-3 rounded-lg transition text-sm disabled:opacity-50"
-                      title="Skip this question (1 use per interview)"
-                    >
-                      <SkipForward className="w-4 h-4" /> Skip
-                      <span className="text-xs opacity-60 ml-0.5">(1 use)</span>
-                    </button>
-                  )}
-                </>
-              )}
-
-              {recState === 'recording' && (
-                <button
-                  onClick={stopRec}
-                  className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-destructive hover:bg-destructive/90 text-destructive-foreground font-medium px-6 py-3 rounded-lg transition"
-                >
-                  <Square className="w-5 h-5 fill-current" /> Stop Recording
-                </button>
-              )}
-
-              {recState === 'review' && (
-                <>
-                  <button
-                    onClick={submitPending}
-                    className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-primary hover:bg-primary/90 text-primary-foreground font-medium px-6 py-3 rounded-lg transition glow-primary"
-                  >
-                    <Send className="w-4 h-4" /> Submit Answer
-                  </button>
-                  {!reRecordUsed && (
-                    <button
-                      onClick={doReRecord}
-                      className="flex items-center justify-center gap-2 bg-surface hover:bg-secondary border border-border text-foreground font-medium px-5 py-3 rounded-lg transition"
-                      title="You can re-record once per question"
-                    >
-                      <RotateCcw className="w-4 h-4" /> Re-record
-                      <span className="text-xs text-muted-foreground ml-1">(1 use)</span>
-                    </button>
-                  )}
-                </>
-              )}
-            </div>
-
-            {/* Keyboard shortcut hint */}
-            {(recState === 'idle' || recState === 'review') && (
-              <p className="text-xs text-muted-foreground/60 text-center">
-                {recState === 'idle' && <>Press <kbd className="px-1.5 py-0.5 rounded border border-border bg-secondary font-mono text-[10px]">Space</kbd> to start recording</>}
-                {recState === 'review' && <>Press <kbd className="px-1.5 py-0.5 rounded border border-border bg-secondary font-mono text-[10px]">Enter</kbd> to submit answer</>}
-              </p>
-            )}
-
-            {/* Review hint */}
-            {recState === 'review' && (
-              <div className="bg-primary/10 border border-primary/30 rounded-xl px-4 py-3 text-sm text-foreground/80">
-                <strong className="text-foreground">Review your answer.</strong> Happy with it? Hit <em>Submit Answer</em>.
-                {!reRecordUsed && " Not happy? You can re-record once."}
-                {reRecordUsed && " Re-record already used for this question."}
-              </div>
-            )}
-
-            {error && (
-              <div className="text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-lg px-4 py-3">
-                {error}
-              </div>
-            )}
-
           </div>
 
-          {/* Sidebar */}
-          <aside className="space-y-4">
+          {/* Sidebar (large screens only, so nothing pushes the controls off-screen) */}
+          <aside className="hidden lg:block min-h-0 overflow-y-auto space-y-4">
             <div className="bg-surface border border-border rounded-2xl p-5">
               <div className="text-xs uppercase tracking-wider text-muted-foreground mb-1">Candidate</div>
               <div className="font-medium">{candidateName}</div>
               <div className="text-sm text-muted-foreground mt-0.5">{jobTitle}</div>
-              <div className="mt-4 pt-4 border-t border-border">
-                <button
-                  onClick={() => setShowEndModal(true)}
-                  disabled={processing || endingEarly}
-                  className="w-full flex items-center justify-center gap-2 text-xs px-3 py-2.5 rounded-lg border border-destructive/40 text-destructive hover:bg-destructive/10 transition disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  <LogOut className="w-3.5 h-3.5" /> End Interview Early
-                </button>
-              </div>
             </div>
             <div className="bg-surface border border-border rounded-2xl p-5">
               <h3 className="text-sm font-medium mb-4">Topic Coverage</h3>
@@ -897,6 +747,133 @@ import { ApiError } from "@/lib/api";
               </ul>
             </div>
           </aside>
+        </div>
+
+        {/* Dock: camera bottom-left, controls beside it — always on screen, no scrolling while answering */}
+        <div className="shrink-0 border-t border-border bg-surface/80 backdrop-blur-xl">
+          <div className="max-w-7xl mx-auto px-4 py-3 flex items-end gap-3 sm:gap-5">
+            {/* Webcam */}
+            <div className="relative shrink-0 w-32 sm:w-56 lg:w-72 aspect-video bg-black rounded-xl overflow-hidden border border-border">
+              {!cameraFailed && (
+                <video
+                  ref={videoRef}
+                  muted
+                  playsInline
+                  className="w-full h-full object-cover"
+                  style={{ transform: "scaleX(-1)" }}
+                />
+              )}
+              {cameraFailed && (
+                <div className="w-full h-full flex flex-col items-center justify-center gap-1 bg-surface/50 text-center px-2">
+                  <MicOff className="w-5 h-5 text-warning" />
+                  <p className="text-[11px] text-white font-medium">Audio-only mode</p>
+                  <p className="text-[10px] text-muted-foreground leading-tight hidden sm:block">Camera unavailable — video analysis skipped</p>
+                </div>
+              )}
+              {recState === 'recording' && (
+                <div className={`absolute top-1.5 left-1.5 flex items-center gap-1.5 backdrop-blur px-2 py-1 rounded-full ${timeWarning ? 'bg-warning/80' : 'bg-black/70'}`}>
+                  <Circle className="w-2.5 h-2.5 fill-destructive text-destructive animate-blink" />
+                  <span className="text-[10px] sm:text-xs font-medium text-white tabular-nums">REC {mm}:{ss}</span>
+                </div>
+              )}
+              {recState === 'review' && (
+                <div className="absolute top-1.5 left-1.5 flex items-center gap-1 bg-black/70 backdrop-blur px-2 py-1 rounded-full">
+                  <CheckCircle2 className="w-3 h-3 text-success" />
+                  <span className="text-[10px] sm:text-xs font-medium text-white">Recorded</span>
+                </div>
+              )}
+              {!streamRef.current && !error && !cameraFailed && (
+                <div className="absolute inset-0 flex items-center justify-center text-muted-foreground gap-1.5 text-[11px]">
+                  <Loader2 className="w-4 h-4 animate-spin" /> <span className="hidden sm:inline">Connecting camera…</span>
+                </div>
+              )}
+            </div>
+
+            {/* Status + controls */}
+            <div className="flex-1 min-w-0 flex flex-col gap-2">
+              {mutedAlert && recState === 'recording' && (
+                <div className="flex items-center gap-2 text-xs font-semibold text-white bg-destructive/90 px-3 py-1.5 rounded-lg animate-pulse w-fit">
+                  <MicOff className="w-3.5 h-3.5" /> Mic may be muted — no audio detected
+                </div>
+              )}
+              {recState === 'recording' && timeWarning && (
+                <div className="text-xs font-medium text-warning">30s left — recording stops automatically at 3:00</div>
+              )}
+              {recState === 'review' && (
+                <p className="text-xs sm:text-sm text-muted-foreground">
+                  <strong className="text-foreground">Review your answer.</strong> Happy with it? Submit.
+                  {!reRecordUsed ? " Not happy? Re-record once." : " Re-record already used."}
+                </p>
+              )}
+              {error && (
+                <div className="text-xs sm:text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-lg px-3 py-2">
+                  {error}
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2 sm:gap-3">
+                {recState === 'idle' && (
+                  <>
+                    <button
+                      onClick={startRec}
+                      className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-success hover:bg-success/90 text-success-foreground font-medium px-5 sm:px-6 py-3 rounded-lg transition"
+                    >
+                      <Video className="w-5 h-5" /> Start Recording
+                    </button>
+                    {!skipUsed && !currentQ.is_follow_up && (
+                      <button
+                        onClick={() => setShowSkipModal(true)}
+                        disabled={skipping}
+                        className="flex items-center justify-center gap-2 bg-surface hover:bg-secondary border border-border text-muted-foreground font-medium px-4 py-3 rounded-lg transition text-sm disabled:opacity-50"
+                        title="Skip this question (1 use per interview)"
+                      >
+                        <SkipForward className="w-4 h-4" /> Skip
+                        <span className="text-xs opacity-60 ml-0.5 hidden sm:inline">(1 use)</span>
+                      </button>
+                    )}
+                  </>
+                )}
+
+                {recState === 'recording' && (
+                  <button
+                    onClick={stopRec}
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-destructive hover:bg-destructive/90 text-destructive-foreground font-medium px-5 sm:px-6 py-3 rounded-lg transition"
+                  >
+                    <Square className="w-5 h-5 fill-current" /> Stop Recording
+                  </button>
+                )}
+
+                {recState === 'review' && (
+                  <>
+                    <button
+                      onClick={submitPending}
+                      className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-primary hover:bg-primary/90 text-primary-foreground font-medium px-5 sm:px-6 py-3 rounded-lg transition glow-primary"
+                    >
+                      <Send className="w-4 h-4" /> Submit Answer
+                    </button>
+                    {!reRecordUsed && (
+                      <button
+                        onClick={doReRecord}
+                        className="flex items-center justify-center gap-2 bg-surface hover:bg-secondary border border-border text-foreground font-medium px-4 sm:px-5 py-3 rounded-lg transition"
+                        title="You can re-record once per question"
+                      >
+                        <RotateCcw className="w-4 h-4" /> Re-record
+                        <span className="text-xs text-muted-foreground ml-1 hidden sm:inline">(1 use)</span>
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {/* Keyboard shortcut hint */}
+              {(recState === 'idle' || recState === 'review') && (
+                <p className="text-[11px] text-muted-foreground/60 hidden sm:block">
+                  {recState === 'idle' && <>Press <kbd className="px-1.5 py-0.5 rounded border border-border bg-secondary font-mono text-[10px]">Space</kbd> to start recording</>}
+                  {recState === 'review' && <>Press <kbd className="px-1.5 py-0.5 rounded border border-border bg-secondary font-mono text-[10px]">Enter</kbd> to submit answer</>}
+                </p>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* Skip Confirmation Modal */}
