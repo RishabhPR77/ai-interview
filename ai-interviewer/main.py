@@ -2,6 +2,7 @@ import logging
 import shutil
 import sys
 import threading
+import time
 from contextlib import asynccontextmanager
 
 # Progress logs print non-ASCII ("→", "—"). On Windows, redirected stdout is
@@ -68,6 +69,7 @@ _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
+    request.state.started_at = time.monotonic()
     # CSRF defence in depth (the session cookie is already SameSite): browsers
     # only let pages send this custom header cross-origin after a CORS
     # preflight, which only CORS_ORIGINS pass.

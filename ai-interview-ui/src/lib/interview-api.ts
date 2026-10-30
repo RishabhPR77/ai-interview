@@ -1,4 +1,4 @@
-import { api, ApiError } from './api'
+import { api, ApiError, uploadForm } from './api'
 
 export interface StartRequest {
   job_title: string
@@ -144,7 +144,7 @@ async function waitForAnswer(session_id: string, question_id: number): Promise<A
   const deadline = Date.now() + 4 * 60 * 1000
   let networkFailures = 0
   while (Date.now() < deadline) {
-    await sleep(1500)
+    await sleep(800)
     let res: AnswerResponse | { status: 'processing' } | { status: 'error'; detail?: string }
     try {
       res = await api(`/interview/${session_id}/answer-status?question_id=${question_id}`)
@@ -168,7 +168,8 @@ export async function submitAnswer(
   session_id: string,
   question_id: number,
   video: Blob,
-  audioOnly: boolean = false
+  audioOnly: boolean = false,
+  onUpload: (share: number) => void = () => {}
 ): Promise<AnswerResponse> {
   const fd = new FormData()
   fd.append('session_id', session_id)
@@ -178,7 +179,7 @@ export async function submitAnswer(
     fd.append('is_audio_only', 'true')
   }
   try {
-    await api<{ status: 'processing' }>('/interview/answer', { method: 'POST', body: fd })
+    await uploadForm<{ status: 'processing' }>('/interview/answer', fd, onUpload)
   } catch (e) {
     // Already being processed (e.g. a retry after a dropped connection) — just wait for it.
     if (!(e instanceof ApiError && e.code === 'answer_processing')) throw e

@@ -20,6 +20,11 @@ if ! swapon --show | grep -q '^/swapfile'; then
   grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
 fi
 
+# Keep the app in RAM: by default Linux swaps it out in favour of cached video
+# files, and the next answer then waits while it's read back from disk.
+echo 'vm.swappiness=10' | sudo tee /etc/sysctl.d/99-tejaskrit.conf >/dev/null
+sudo sysctl -q -p /etc/sysctl.d/99-tejaskrit.conf
+
 # 2. Docker (official convenience script).
 if ! command -v docker >/dev/null; then
   echo "==> Installing Docker"

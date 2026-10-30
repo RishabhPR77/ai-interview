@@ -37,6 +37,27 @@ function messageFrom(body: ErrorBody | null, status: number): { message: string;
   return { message: `Request failed (${status})` }
 }
 
+/** POST a form and report upload progress (0–1), which fetch can't do. */
+export function uploadForm<T>(path: string, body: FormData, onProgress: (share: number) => void): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `${API_BASE}${path}`)
+    xhr.withCredentials = true
+    xhr.responseType = 'json'
+    xhr.setRequestHeader('X-Requested-With', 'tejaskrit')
+    xhr.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded / e.total) }
+    xhr.upload.onload = () => onProgress(1)
+    xhr.onerror = () => reject(new ApiError('Network error — check your connection and try again.', 0))
+    xhr.onload = () => {
+      if (xhr.status === 401) window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT))
+      if (xhr.status >= 200 && xhr.status < 300) return resolve(xhr.response as T)
+      const { message, code } = messageFrom(xhr.response, xhr.status)
+      reject(new ApiError(message, xhr.status, code))
+    }
+    xhr.send(body)
+  })
+}
+
 export async function api<T>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<T> {
   const { json, headers, ...rest } = init
   const h = new Headers(headers)

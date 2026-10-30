@@ -1,3 +1,5 @@
+import ctypes
+import gc
 import logging
 import os
 import subprocess
@@ -7,7 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, Depends, Request, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -327,6 +329,7 @@ def interview_state(session_id: str, user: User = Depends(current_user)):
 
 @router.post("/interview/answer", status_code=202)
 def submit_answer(
+    request: Request,
     session_id: str = Form(...),
     question_id: int = Form(...),
     video: UploadFile = File(...),
@@ -346,6 +349,8 @@ def submit_answer(
         })
 
     tmp_path = _save_upload(video, session_id)
+    log.info("answer upload: %.1f MB in %.1fs", os.path.getsize(tmp_path) / 1e6,
+             time.monotonic() - request.state.started_at)
     duration = _probe_duration(tmp_path)
     if duration is not None and duration > MAX_ANSWER_SECONDS + 5:
         _unlink(tmp_path)
@@ -535,6 +540,16 @@ def _analyse_video(recording: str | None, fallback: dict) -> dict:
             _unlink(compressed)
 
 
+def _release_memory() -> None:
+    """Video analysis leaves a lot of freed memory inside the allocator. Hand it back
+    so it doesn't push the app into swap, which slows the next candidate's answer."""
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass  # not glibc
+
+
 def _run_analysis(session_id: str, question_id: int) -> None:
     """Stage 2: full video analysis and scoring of one answer."""
     session = session_store.load(session_id)
@@ -571,6 +586,7 @@ def _run_analysis(session_id: str, question_id: int) -> None:
             current["analysis"] = {"state": "done" if scored else "failed"}
             session_store.save(session)
     _unlink(recording)
+    _release_memory()
     _finish_report(session_id)
 
 

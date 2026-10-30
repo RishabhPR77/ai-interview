@@ -26,7 +26,6 @@ import { ApiError } from "@/lib/api";
   ];
 
   const PROCESSING_MESSAGES = [
-    "Saving your answer...",
     "Listening to what you said...",
     "Choosing your next question...",
   ];
@@ -66,6 +65,7 @@ import { ApiError } from "@/lib/api";
     const MAX_RECORDING_SECONDS = 180; // 3 minutes hard cap
     const WARNING_AT_SECONDS = 150;    // 2:30 — show "30 seconds left" warning
     const [processingStep, setProcessingStep] = useState<number>(-1);
+    const [uploadShare, setUploadShare] = useState<number>(0);
     const [coverage, setCoverage] = useState<Record<string, number>>(() => {
       const init: Record<string, number> = {};
       CATEGORIES.forEach(c => (init[c.key] = 0));
@@ -396,7 +396,7 @@ import { ApiError } from "@/lib/api";
 
       // The server analyses video at 640×480, so a modest bitrate loses nothing
       // and keeps uploads quick on home connections.
-      const rec = new MediaRecorder(streamRef.current, { mimeType: mime, videoBitsPerSecond: 900_000, audioBitsPerSecond: 64_000 });
+      const rec = new MediaRecorder(streamRef.current, { mimeType: mime, videoBitsPerSecond: 700_000, audioBitsPerSecond: 64_000 });
       rec.ondataavailable = (e) => e.data.size > 0 && chunksRef.current.push(e.data);
       rec.onstop = () => {
         // Ignore if this recorder was replaced by a re-record
@@ -498,12 +498,17 @@ import { ApiError } from "@/lib/api";
       setError(null);
       setRecState('processing');
       setProcessingStep(0);
-      stepTimerRef.current = window.setInterval(() => {
-        setProcessingStep(s => Math.min(s + 1, PROCESSING_MESSAGES.length - 1));
-      }, 1500);
+      setUploadShare(0);
 
       try {
-        const res = await submitAnswer(start.session_id, currentQ.question_id, pendingBlob, !!cameraFailed);
+        const res = await submitAnswer(start.session_id, currentQ.question_id, pendingBlob, !!cameraFailed, share => {
+          setUploadShare(share);
+          if (share >= 1 && !stepTimerRef.current) {
+            stepTimerRef.current = window.setInterval(() => {
+              setProcessingStep(s => Math.min(s + 1, PROCESSING_MESSAGES.length - 1));
+            }, 1500);
+          }
+        });
         if (stepTimerRef.current) { window.clearInterval(stepTimerRef.current); stepTimerRef.current = null; }
 
         if (res.status === "complete") {
@@ -561,12 +566,16 @@ import { ApiError } from "@/lib/api";
         {/* Full-screen processing overlay */}
         {processing && (
           <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-app/85 backdrop-blur-md gap-7 px-6 text-center">
-            <LoadingRing size={128} />
+            <LoadingRing size={128} progress={uploadShare < 1 ? Math.max(0.03, uploadShare) : undefined}>
+              {uploadShare < 1 && <span className="font-serif text-3xl">{Math.round(uploadShare * 100)}<span className="text-base text-muted-foreground">%</span></span>}
+            </LoadingRing>
             <div>
               <p className="font-serif text-2xl sm:text-3xl">
-                {PROCESSING_MESSAGES[Math.min(processingStep, PROCESSING_MESSAGES.length - 1)]}
+                {uploadShare < 1 ? "Uploading your answer..." : PROCESSING_MESSAGES[Math.min(processingStep, PROCESSING_MESSAGES.length - 1)]}
               </p>
-              <p className="mt-2 text-sm text-muted-foreground">Your next question will be here in a moment.</p>
+              <p className="mt-2 text-sm text-muted-foreground">
+                {uploadShare < 1 ? "Keep this page open for a moment." : "Your next question will be here in a moment."}
+              </p>
             </div>
           </div>
         )}
