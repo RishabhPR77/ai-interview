@@ -150,14 +150,14 @@ function HeroVisual() {
         </div>
 
         {/* video area */}
-        <div className="relative h-[calc(100%-44px)] bg-[radial-gradient(ellipse_at_50%_30%,#1b3a34,#0a1513_70%)]">
+        <div className="relative h-[calc(100%-44px)] bg-[radial-gradient(ellipse_at_50%_30%,#2a2620,#0c0c0d_70%)]">
           <div className="absolute inset-0 grid-bg opacity-40" />
           {/* silhouette */}
           <svg viewBox="0 0 200 160" className="absolute left-1/2 -translate-x-1/2 bottom-0 w-[80%] sm:w-[58%]" aria-hidden>
             <defs>
               <linearGradient id="sil" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0" stopColor="#34564e" />
-                <stop offset="1" stopColor="#12201d" />
+                <stop offset="0" stopColor="#4a4438" />
+                <stop offset="1" stopColor="#1a1814" />
               </linearGradient>
             </defs>
             <ellipse cx="100" cy="62" rx="30" ry="36" fill="url(#sil)" />
@@ -289,7 +289,7 @@ function ReportPreview() {
             </div>
             <div className="h-1.5 rounded-full bg-secondary overflow-hidden">
               <motion.div
-                className="h-full rounded-full bg-gradient-to-r from-primary to-[#1c8fa8]"
+                className="h-full rounded-full bg-gradient-to-r from-primary to-[#a8823f]"
                 initial={{ width: 0 }} whileInView={{ width: `${score * 10}%` }} viewport={{ once: true }}
                 transition={{ duration: 1.1, delay: 0.1 * i, ease: [0.2, 0.7, 0.2, 1] }}
               />

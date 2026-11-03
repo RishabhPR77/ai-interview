@@ -3,13 +3,13 @@ import type { ReportResponse } from './interview-api'
 
 type RGB = [number, number, number]
 
-// Print-friendly version of the app's palette: dark ink on white with a deep teal accent.
-const INK    : RGB = [14, 28, 25]
-const INK2   : RGB = [62, 80, 75]
-const INK3   : RGB = [112, 130, 124]
-const RULE   : RGB = [212, 224, 220]
-const TINT   : RGB = [238, 246, 243]
-const ACCENT : RGB = [13, 148, 120]
+// Print-friendly version of the app's palette: dark ink on white with a deep gold accent.
+const INK    : RGB = [20, 20, 22]
+const INK2   : RGB = [74, 72, 68]
+const INK3   : RGB = [125, 120, 112]
+const RULE   : RGB = [226, 221, 211]
+const TINT   : RGB = [248, 244, 236]
+const ACCENT : RGB = [160, 120, 44]
 const GREEN  : RGB = [47, 125, 79]
 const AMBER  : RGB = [168, 101, 15]
 const RED    : RGB = [196, 47, 47]

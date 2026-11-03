@@ -2,7 +2,7 @@
 // version of the app (sign in → key + model → job & resume → answer → report),
 // so visitors see how to use it before signing up. Elements are positioned in
 // percentages of the stage so the pointer's targets line up at every size.
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { AnimatePresence, motion, useInView, useReducedMotion } from 'framer-motion'
 import { Check, ChevronDown, FileDown, Loader2, Mic, PlayCircle, Sparkles } from 'lucide-react'
 
@@ -20,9 +20,9 @@ const STEPS: { title: string; caption: string; path: string; cursor: Waypoint[] 
   },
   {
     title: 'Add your AI key, pick a model',
-    caption: 'Paste a key from Groq, OpenAI, Gemini, Anthropic or OpenRouter, then choose models from the list.',
+    caption: 'Paste a key from Anthropic, OpenAI, Gemini, Groq or OpenRouter, then pick your evaluation and transcription models.',
     path: '/settings',
-    cursor: [{ at: 0, x: 85, y: 92 }, { at: 3, x: 40, y: 23 }, { at: 12, x: 77, y: 23, click: true }, { at: 20, x: 50, y: 49, click: true }, { at: 28, x: 50, y: 59, click: true }, { at: 38, x: 50, y: 87, click: true }],
+    cursor: [{ at: 0, x: 85, y: 92 }, { at: 3, x: 40, y: 20 }, { at: 12, x: 77, y: 20, click: true }, { at: 20, x: 50, y: 42, click: true }, { at: 28, x: 50, y: 52, click: true }, { at: 31, x: 50, y: 64, click: true }, { at: 39, x: 50, y: 85.5, click: true }],
   },
   {
     title: 'Paste the job and your resume',
@@ -86,25 +86,31 @@ function Settings({ t }: { t: number }) {
   const connected = t >= 14
   const open = t >= 21 && t < 29
   const picked = t >= 29
+  const sttPicked = t >= 33
+  const dropdown = (text: ReactNode, active: boolean, top: number) => (
+    <div className={`${field} justify-between ${active ? 'border-primary/60' : 'border-border'}`} style={at(top, 8, 8, 10)}>
+      <span className="flex items-center gap-1.5">{text}</span>
+      <ChevronDown className="w-[1.1em] h-[1.1em] text-muted-foreground" />
+    </div>
+  )
   return (
     <>
-      <div className={label} style={at(11, 8, 8)}>Groq API key</div>
-      <div className={`${field} font-mono ${t >= 4 && t < 13 ? 'border-primary/60' : 'border-border'}`} style={at(17, 8, 34, 11)}>
-        {keyChars ? `gsk_${'•'.repeat(keyChars)}` : <span className="text-muted-foreground/50 font-sans">Paste your API key</span>}
+      <div className={label} style={at(9, 8, 8)}>Anthropic API key</div>
+      <div className={`${field} font-mono ${t >= 4 && t < 13 ? 'border-primary/60' : 'border-border'}`} style={at(15, 8, 34, 10)}>
+        {keyChars ? `sk-ant-${'•'.repeat(keyChars)}` : <span className="text-muted-foreground/50 font-sans">Paste your API key</span>}
       </div>
-      <div className={`${button} ${connected ? 'bg-success/15 text-success border border-success/40' : 'bg-primary text-primary-foreground'}`} style={at(17, 69, 8, 11)}>
+      <div className={`${button} ${connected ? 'bg-success/15 text-success border border-success/40' : 'bg-primary text-primary-foreground'}`} style={at(15, 69, 8, 10)}>
         {connected ? <><Check className="w-[1em] h-[1em]" /> Connected</> : 'Verify & save'}
       </div>
-      <div className={label} style={at(37, 8, 8)}>Evaluation model</div>
-      <div className={`${field} justify-between ${open ? 'border-primary/60' : 'border-border'}`} style={at(43, 8, 8, 11)}>
-        <span className="flex items-center gap-1.5">{picked ? <>GPT-OSS 120B <Sparkles className="w-[1em] h-[1em] text-primary" /></> : <span className="text-muted-foreground/60">Choose a model</span>}</span>
-        <ChevronDown className="w-[1.1em] h-[1.1em] text-muted-foreground" />
-      </div>
+      <div className={label} style={at(31, 8, 8)}>Evaluation model</div>
+      {dropdown(picked ? <>Claude Opus 5.5 <Sparkles className="w-[1em] h-[1em] text-primary" /></> : <span className="text-muted-foreground/60">Choose a model</span>, open, 37)}
+      <div className={label} style={at(53, 8, 8)}>Transcription model</div>
+      {dropdown(sttPicked ? <>Whisper Large v3 <span className="text-muted-foreground">· best accuracy</span></> : <span className="text-muted-foreground/60">Choose a model</span>, t >= 31 && t < 35, 59)}
       <AnimatePresence>
         {open && (
           <motion.div initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-            className="absolute rounded-lg border border-border bg-surface shadow-2xl overflow-hidden z-10" style={at(55, 8, 8, 25)}>
-            {[['GPT-OSS 120B', '131K context', true], ['GPT-OSS 20B', '131K context', true], ['Qwen 3.8 27B', '131K context', false]].map(([n, d, rec], i) => (
+            className="absolute rounded-lg border border-border bg-surface shadow-2xl overflow-hidden z-10" style={at(48, 8, 8, 24)}>
+            {[['Claude Opus 5.5', 'most capable', true], ['Claude Sonnet 5.5', 'balanced', true], ['Claude Haiku 5.5', 'fastest', false]].map(([n, d, rec], i) => (
               <div key={String(n)} className={`h-1/3 flex items-center justify-between px-[3%] text-[clamp(8px,1.4vw,12px)] ${i === 0 ? 'bg-primary/10' : ''}`}>
                 <span className="flex items-center gap-1.5">{n} {rec && <Sparkles className="w-[1em] h-[1em] text-primary" />}</span>
                 <span className="text-muted-foreground">{d}</span>
@@ -113,7 +119,7 @@ function Settings({ t }: { t: number }) {
           </motion.div>
         )}
       </AnimatePresence>
-      <div className={`${button} ${picked ? 'bg-primary text-primary-foreground glow-primary' : 'bg-secondary text-muted-foreground'}`} style={at(82, 30, 30, 11)}>
+      <div className={`${button} ${sttPicked ? 'bg-primary text-primary-foreground glow-primary' : 'bg-secondary text-muted-foreground'}`} style={at(80, 30, 30, 11)}>
         <PlayCircle className="w-[1.2em] h-[1.2em]" /> Start interview
       </div>
     </>

@@ -84,8 +84,8 @@ export function PreInterviewScreen({ start, jobTitle, candidateName, rubric, onB
       </header>
 
       {/* Blobs */}
-      <div className="pointer-events-none fixed -top-40 -left-40 w-[520px] h-[520px] rounded-full blur-[120px] opacity-20 bg-[#1fae8f]" />
-      <div className="pointer-events-none fixed top-1/3 -right-40 w-[480px] h-[480px] rounded-full blur-[120px] opacity-15 bg-[#1c8fa8]" />
+      <div className="pointer-events-none fixed -top-40 -left-40 w-[520px] h-[520px] rounded-full blur-[120px] opacity-20 bg-[#8a6d35]" />
+      <div className="pointer-events-none fixed top-1/3 -right-40 w-[480px] h-[480px] rounded-full blur-[120px] opacity-15 bg-[#4a4a55]" />
 
       <div className="flex-1 flex items-start justify-center px-4 py-10">
         <div className="w-full max-w-2xl space-y-5">
